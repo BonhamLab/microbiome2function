@@ -1,0 +1,12 @@
+# ignore all
+*
+
+# BUT
+!data/
+!data/*.tsv
+!helper_scripts/
+!helper_scripts/*.py
+# ---------------------------------------------------------------
+!.gitignore
+!README.MD
+!requirements.txt
