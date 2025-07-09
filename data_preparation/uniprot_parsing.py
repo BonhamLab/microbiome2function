@@ -7,7 +7,7 @@ import json
  https://www.uniprot.org/help/return_fields
 """
 
-def features_from_Uniref90ID(ID: str, *fields):
+def features_from_Uniref90ID(ID: str, *fields) -> pd.DataFrame:
     url = "https://rest.uniprot.org/uniprotkb/search?query={Uniref90_ID}"
     url_with_fields = url
     if fields:
