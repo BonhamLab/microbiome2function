@@ -1,7 +1,7 @@
 import pandas as pd
 import re
 
-def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None):
+def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None) -> list:
 
     unirefs = set()
     uniclusts = set()
@@ -34,4 +34,4 @@ def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None):
     
     print(f"{unmatched_uniclusts_count} UniClust90s was/were not matched")
 
-    return unirefs 
+    return list(unirefs)
