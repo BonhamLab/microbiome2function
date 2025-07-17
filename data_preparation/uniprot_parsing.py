@@ -2,7 +2,8 @@ import requests
 import time
 import io
 import pandas as pd
-from typing import Union, List
+from typing import List
+import re
 import logging
 from datetime import datetime
 from math import ceil
@@ -24,6 +25,13 @@ recommended_fields = [
 # in the UniProt database and lead to HTTP errors (Bad request error), so what we will do is filter them out
 def parse_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields, batch_size: int = 100,
                   rps: float = 10, filter_out_bad_ids: bool = True, subroutine: bool = False) -> pd.DataFrame:
+
+    if filter_out_bad_ids and not subroutine:
+        p1 = r"^UNK"; p2 = r"^UPI"
+        valid_ids = [id_ for id_ in uniref_ids if not (re.match(p1, id_) or re.match(p2, id_))]
+        logging.info(f"Filtered out {len(uniref_ids) - len(valid_ids)} id(s) -- every one prefixed with either 'UNK' or 'UPI'")
+        print(f"Filtered out {len(uniref_ids) - len(valid_ids)} corrupt id(s)")
+        uniref_ids = valid_ids
 
     logging.info(
         f"Started retrieving {fields} for {len(uniref_ids)} IDs"
