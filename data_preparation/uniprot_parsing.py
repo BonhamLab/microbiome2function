@@ -1,43 +1,96 @@
-from tqdm import tqdm
 import requests
 import time
+import io
 import pandas as pd
-from util import flatten
+from typing import Union, List
+import logging
+from datetime import datetime
+from math import ceil
 
-FIELDS = [
-    "ft_domain", "cc_domain", "protein_families", "go_f", "go_p",
+logging.basicConfig(
+    filename=f"uniprot_parsing_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log",
+    filemode="a",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+recommended_fields = [
+    "accession", "ft_domain", "cc_domain", "protein_families", "go_f", "go_p",
     "cc_interaction", "cc_function", "cc_catalytic_activity",
     "ec", "cc_pathway", "rhea", "cc_cofactor", "cc_activity_regulation"
 ]
 
-def data_from_Uniref90ID(uniref_id: str, *fields) -> dict:
-    base = "https://rest.uniprot.org/uniprotkb/search?query={ID}"
-    url = base.format(ID=uniref_id)
-    if fields:
-        url += "&fields=" + ",".join(fields)
+# I have empirically determined that requests for accession IDs that start with 'UNK' and 'UPI' are never found
+# in the UniProt database and lead to HTTP errors (Bad request error), so what we will do is filter them out
+def parse_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields, batch_size: int = 100,
+                  rps: float = 10, filter_out_bad_ids: bool = True, subroutine: bool = False) -> pd.DataFrame:
 
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        raise RuntimeError(f"UniProt API error {resp.status_code}: {resp.text}")
+    logging.info(
+        f"Started retrieving {fields} for {len(uniref_ids)} IDs"
+    )
+    
+    dfs: list[pd.DataFrame] = []
+    total_ids = len(uniref_ids)
+    
+    total_batches = ceil(total_ids / batch_size)
+    # process in batches
+    for batch_idx, start in enumerate(range(0, total_ids, batch_size), start=1):
+        
+        end = start + batch_size
+        batch = uniref_ids[start:end]
 
-    j = resp.json()
-    return flatten(j.get("results", []))
+        if not subroutine:
+            print(f"Processed {(batch_idx-1)}/{total_batches} batches; Querying {len(batch)} IDs…")
 
-def parse_unirefs(uniref_ids: list, fields: list = FIELDS) -> pd.DataFrame:
-    records = []
-    for uniref_id in tqdm(uniref_ids, desc="Fetching UniProt data"):
-        time.sleep(1)
-        print("Fetching ", uniref_id)
+        params = {
+            "format": "tsv",
+            "size": len(batch),
+            "query": " OR ".join(f"accession:{uid}" for uid in batch)
+        }
+
+        if fields:
+            params["fields"] = ",".join(fields)
+        
+        logging.info(f"Query params: {params}")
         try:
-            data = data_from_Uniref90ID(uniref_id, *fields)
-        except Exception as e:
-            print(f"❌ failed for {uniref_id}: {e}")
+            resp = requests.get(
+                "https://rest.uniprot.org/uniprotkb/search",
+                params=params,
+                timeout=30
+            )
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            logging.warning(f"HTTP error on batch {batch_idx}: {e}")
+            if batch_size <= 1:
+                print(f"❌ Couldn't retrieve data for {batch} \nDropping and moving on")
+                logging.warning(f"Dropping ID(s): {batch} and moving on")
+                continue
+            # split the batch and retry
+            sub_df = parse_unirefs(
+                uniref_ids=batch,
+                fields=fields,
+                batch_size=batch_size // 2,
+                rps=rps, filter_out_bad_ids=filter_out_bad_ids,
+                subroutine=True)
+            if not sub_df.empty:
+                dfs.append(sub_df)
             continue
-        records.append(data)
+        except Exception as e:
+            logging.error(f"Unexpected error on batch {batch_idx}: {e}")
+            continue
 
-    if not records:
-        return pd.DataFrame()  # empty
+        file_view = io.StringIO(resp.text)
+        df = pd.read_csv(file_view, sep="\t", na_filter=False)
+        if not df.empty:
+            dfs.append(df)
 
-    print("Finished parsing")
+        time.sleep(1.0 / rps)
+    
+    if not subroutine:
+        print("Finished fetching the data")
 
-    return pd.DataFrame(records)
+    # stitch together or return an empty frame with correct columns
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=fields or [])

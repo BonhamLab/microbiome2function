@@ -32,6 +32,6 @@ def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None) -> list:
     else:
         unmatched_uniclusts_count = len(uniclusts)
     
-    print(f"{unmatched_uniclusts_count} UniClust90s was/were not matched")
+    print(f"{unmatched_uniclusts_count} UniClust90(s) was/were not matched")
 
     return list(unirefs)
