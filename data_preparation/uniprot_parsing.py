@@ -7,9 +7,15 @@ import re
 import logging
 from datetime import datetime
 from math import ceil
+import os
+from tqdm import tqdm
+from numpy import nan
+
+# yea I know I should use .env for such things; I will do if there's a need -- f.e. code distribution
+__logs_dir = "/Users/yehormishchyriak/Desktop/BonhamLab/summer2025/microbiome2function/logs"
 
 logging.basicConfig(
-    filename=f"uniprot_parsing_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log",
+    filename=os.path.join(__logs_dir, f"uniprot_parsing_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log"),
     filemode="a",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -21,9 +27,45 @@ recommended_fields = [
     "ec", "cc_pathway", "rhea", "cc_cofactor", "cc_activity_regulation"
 ]
 
-# I have empirically determined that requests for accession IDs that start with 'UNK' and 'UPI' are never found
-# in the UniProt database and lead to HTTP errors (Bad request error), so what we will do is filter them out
-def parse_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields, batch_size: int = 100,
+def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None) -> list:
+
+    unirefs = set()
+    uniclusts = set()
+
+    df = pd.read_csv(path_, sep='\t', skiprows=[0])
+
+    print("Extracting UniRef90 and UniClust90 id(s) from ", os.path.basename(path_))
+    for id in df["READS_UNMAPPED"]:
+        uniref_match = re.search(r"UniRef90_([A-Z0-9]+)", id)
+        if uniref_match:
+            unirefs.add(uniref_match.group(1))
+            continue
+        uniclust_match = re.search(r"UniClust90_([0-9]+)", id)
+        if uniclust_match:
+            uniclusts.add(uniclust_match.group(1))
+    print(f"Successfully extracted {len(unirefs)} UniRef90(s) and {len(uniclusts)} UniClust90(s)")
+    unmatched_uniclusts_count = 0
+    if uniclust_to_uniref_tsv is not None:
+        print(f"Now attempting to map the {len(uniclusts)} UniClust90(s) to UniRef90 id(s)",
+              f"using the {os.path.basename(uniclust_to_uniref_tsv)} mapping")
+        map_df = pd.read_csv(uniclust_to_uniref_tsv, sep="\t", header=None, names=["uniclust_id", "uniref_id"])
+        map_df["uniclust_id"] = map_df["uniclust_id"].astype(str)
+        id_to_uniref = dict(zip(map_df["uniclust_id"], map_df["uniref_id"]))
+        for id in tqdm(uniclusts, desc=f"Attempting to map {len(uniclusts)} UniClusts to UniRefs"):
+            try:
+                uniref = id_to_uniref[id]
+            except KeyError:
+                unmatched_uniclusts_count += 1
+                continue
+            unirefs.add(uniref)
+    else:
+        unmatched_uniclusts_count = len(uniclusts)
+    
+    print(f"{unmatched_uniclusts_count} UniClust90(s) was/were not mapped to UniRef90s and were dropped")
+
+    return list(unirefs)
+
+def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields, batch_size: int = 100,
                   rps: float = 10, filter_out_bad_ids: bool = True, subroutine: bool = False) -> pd.DataFrame:
 
     if filter_out_bad_ids and not subroutine:
@@ -74,7 +116,7 @@ def parse_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields,
                 logging.warning(f"Dropping ID(s): {batch} and moving on")
                 continue
             # split the batch and retry
-            sub_df = parse_unirefs(
+            sub_df = retrieve_fields_for_unirefs(
                 uniref_ids=batch,
                 fields=fields,
                 batch_size=batch_size // 2,
@@ -99,6 +141,28 @@ def parse_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields,
 
     # stitch together or return an empty frame with correct columns
     if dfs:
-        return pd.concat(dfs, ignore_index=True)
+        DF = pd.concat(dfs, ignore_index=True)
     else:
-        return pd.DataFrame(columns=fields or [])
+        DF = pd.DataFrame(columns=fields or [])
+        DF.set_index("accession", inplace=True, drop=True)
+        return DF
+    
+    DF.replace("", nan, inplace=True)
+    DF.set_index("Entry", inplace=True, drop=True)
+    DF.dropna(how="all", inplace=True)
+
+    return DF
+
+def tsv2df(tsv_path: str, uniclust_map_path: str, save: bool = True):
+    unirefs: List[str] = unirefs_from_tsv(tsv_path, uniclust_map_path)
+    df: pd.DataFrame = retrieve_fields_for_unirefs(unirefs, rps=15)
+    if save:
+        df.to_csv(os.path.basename(tsv_path).replace("tsv", "csv"))
+    return df
+
+def process_all(tsv_files_dir: str, uniclust_map_path: str):
+    files = [os.path.join(tsv_files_dir, file) for file in os.listdir(tsv_files_dir)]
+    for file in files:
+        if file.endswith("_genefamilies.tsv"):
+            tsv2df(file, uniclust_map_path, save=True)
+            print("Successfully processed: ", os.path.basename(file))
