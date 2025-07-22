@@ -2,18 +2,17 @@
 *
 
 # BUT
-!data/
-!data/*.tsv
-!data/*.csv
-
 !data_preparation/
-!data_preparation/*.py
-!data_preparation/*.ipynb
-
+!data_preparation/notebooks/
+!data_preparation/notebooks/*.ipynb
+!data_preparation/data_prep_scripts/
+!data_preparation/data_prep_scripts/*.py
+# ---------------------------------------------------------------
 !ML/
 !ML/*.py
 !ML/*.ipynb
 # ---------------------------------------------------------------
+!util.py
 !.gitignore
 !README.MD
 !requirements.txt

@@ -1,21 +1,26 @@
+# external:
 import requests
+import pandas as pd
+from tqdm import tqdm
+from numpy import nan
+# builtins:
+import os
 import time
 import io
-import pandas as pd
 from typing import List
 import re
 import logging
 from datetime import datetime
 from math import ceil
-import os
-from tqdm import tqdm
-from numpy import nan
-
-# yea I know I should use .env for such things; I will do if there's a need -- f.e. code distribution
-__logs_dir = "/Users/yehormishchyriak/Desktop/BonhamLab/summer2025/microbiome2function/logs"
+# pkg:
+from .data_preparation_utils import preprocess_col
+# env:
+from dotenv import load_dotenv
+load_dotenv()
+LOGS_DIR = os.getenv("LOGS_DIR")
 
 logging.basicConfig(
-    filename=os.path.join(__logs_dir, f"uniprot_parsing_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log"),
+    filename=os.path.join(LOGS_DIR, f"uniprot_parsing_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log"),
     filemode="a",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -153,16 +158,36 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str] = recom
 
     return DF
 
-def tsv2df(tsv_path: str, uniclust_map_path: str, save: bool = True):
+def process_entries(df: pd.DataFrame) -> pd.DataFrame:
+    new_df = df.copy(deep=True)
+    for col_name in new_df.columns:
+        preprocess_col(new_df, col_name)
+    return new_df
+
+def tsv2df(tsv_path: str, uniclust_map_path: str, save: bool = True, save2dir: str = None):
     unirefs: List[str] = unirefs_from_tsv(tsv_path, uniclust_map_path)
-    df: pd.DataFrame = retrieve_fields_for_unirefs(unirefs, rps=15)
+    df: pd.DataFrame = process_entries(retrieve_fields_for_unirefs(unirefs, rps=15))
     if save:
-        df.to_csv(os.path.basename(tsv_path).replace("tsv", "csv"))
+        if save2dir is None:
+            raise RuntimeError("if 'save' is True, 'save2dir' argument must be provided")
+        save2path = os.path.join(save2dir, os.path.basename(tsv_path).replace("tsv", "csv"))
+        df.to_csv(save2path)
     return df
 
-def process_all(tsv_files_dir: str, uniclust_map_path: str):
+def process_all_tsvs(tsv_files_dir: str, uniclust_map_path: str, save2dir: str = None):
+    if save2dir is None:
+        save2dir = os.getcwd()
     files = [os.path.join(tsv_files_dir, file) for file in os.listdir(tsv_files_dir)]
     for file in files:
         if file.endswith("_genefamilies.tsv"):
             tsv2df(file, uniclust_map_path, save=True)
             print("Successfully processed: ", os.path.basename(file))
+
+
+__all__ = [
+    "unirefs_from_tsv",
+    "retrieve_fields_for_unirefs",
+    "process_entries",
+    "tsv2df",
+    "process_all_tsvs"
+]
