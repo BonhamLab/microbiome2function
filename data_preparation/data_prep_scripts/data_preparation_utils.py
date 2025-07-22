@@ -19,10 +19,6 @@ _info_extr_patterns = {
     "Activity regulation" : re.compile(r"ACTIVITY REGULATION:\s(.*?)(?=\{|$)")
 }
 
-# Some of the fields have multiple entries. What do we do when only some of the entries coincide -- not all of then?
-# I guess we would need to quantify categories similarity in some crude way. In any case, some preprocessing is needed here.
-# ^^^ This is a very important issue I think and has to do with basically all the features.
-
 def _preprocess_col_helper(col_name: str):
     unavailable = set()
 
@@ -47,5 +43,3 @@ def _preprocess_col_helper(col_name: str):
 
 def preprocess_col(df: pd.DataFrame, col_name: str) -> None:
     df[col_name] = df[col_name].apply(_preprocess_col_helper(col_name))
-
-# NOTE: I need to create unit tests for all of these
