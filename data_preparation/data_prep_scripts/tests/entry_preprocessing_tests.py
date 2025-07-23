@@ -98,3 +98,20 @@ atexit.register(Testing.display_stats, Testing.stats)
 
 if __name__ == "__main__":
     unittest.main()
+    """ July 23, 2025
+    =============================================================
+    'Activity regulation' passed 1 test(s) and failed 19 test(s)
+    'Catalytic activity' passed 18 test(s) and failed 2 test(s)
+    'Cofactor' passed 16 test(s) and failed 2 test(s)
+    'Domain [CC]' passed 19 test(s) and failed 0 test(s)
+    'Domain [FT]' passed 20 test(s) and failed 0 test(s)
+    'EC number' passed 0 test(s) and failed 20 test(s)
+    'Function [CC]' passed 20 test(s) and failed 0 test(s)
+    'Gene Ontology (biological process)' passed 17 test(s) and failed 1 test(s)
+    'Gene Ontology (molecular function)' passed 17 test(s) and failed 3 test(s)
+    'Interacts with' passed 0 test(s) and failed 20 test(s)
+    'Pathway' passed 19 test(s) and failed 1 test(s)
+    'Protein families' passed 18 test(s) and failed 1 test(s)
+    'Rhea ID' passed 20 test(s) and failed 0 test(s)
+    =============================================================
+    """
