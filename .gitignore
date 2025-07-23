@@ -8,6 +8,10 @@
 !data_preparation/data_prep_scripts/
 !data_preparation/data_prep_scripts/*.py
 # ---------------------------------------------------------------
+!tests/
+!tests/testing_data/
+!tests/testing_data/*.json
+# ---------------------------------------------------------------
 !ML/
 !ML/*.py
 !ML/*.ipynb
