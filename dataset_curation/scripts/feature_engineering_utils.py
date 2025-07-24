@@ -70,7 +70,7 @@ def _pool_domain_embeddings(seqs: List[str]) -> torch.Tensor:
     embs = [_embed_sequence(s) for s in seqs]    # list of [D]
     return torch.stack(embs, dim=0).mean(dim=0)  # [D]
 
-# ─── DATAFRAME PROCESSOR ───────────────────────────────────────────────────────
+# DATAFRAME PROCESSOR:
 
 def process_ft_domain(df: pd.DataFrame, drop_redundant_cols: bool = True) -> pd.DataFrame:
     df = df.copy(deep=True)
