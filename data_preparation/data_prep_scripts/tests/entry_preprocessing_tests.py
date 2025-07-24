@@ -14,32 +14,30 @@ import atexit
 from dotenv import load_dotenv
 load_dotenv()
 
-TEST_DATA = getenv("TEST_DATA")
+DATA_EXTRACTION_TESTS = getenv("DATA_EXTRACTION_TESTS")
 
+def display_stats(stats):
+    print("=============================================================")
+    for test_case in stats:
+        P = stats[test_case]["Passed"]
+        F = stats[test_case]["Failed"]
+        print(f"'{test_case}' passed {P}/{P+F} test(s)")
+    print("=============================================================")
 
-class Testing(unittest.TestCase):
+class TestingDataExtraction(unittest.TestCase):
     
     stats = dict()
 
     @classmethod
     def setUpClass(cls):
-        with open(TEST_DATA, "r") as f:
+        with open(DATA_EXTRACTION_TESTS, "r") as f:
             cls.data = json.load(f)
 
-    @staticmethod
-    def display_stats(stats):
-        print("=============================================================")
-        for test_case in stats:
-            P = stats[test_case]["Passed"]
-            F = stats[test_case]["Failed"]
-            print(f"'{test_case}' passed {P}/{P+F} test(s)")
-        print("=============================================================")
-
     def _test(self, col_name: str):
-        Testing.stats[col_name] = {"Passed": 0, "Failed": 0}
-        local_stats = Testing.stats[col_name]
+        TestingDataExtraction.stats[col_name] = {"Passed": 0, "Failed": 0}
+        local_stats = TestingDataExtraction.stats[col_name]
         helper = _preprocess_col_helper(col_name, apply_norm=False, apply_strip_pubmed=False)
-        for i, (raw, expected) in enumerate(Testing.data[col_name].items(), start=1):
+        for i, (raw, expected) in enumerate(TestingDataExtraction.data[col_name].items(), start=1):
             print(f"Running test {i} for {col_name}")
             expected = tuple(dict.fromkeys(expected)) if isinstance(expected, list) else expected
             with self.subTest(raw=raw):
@@ -91,7 +89,7 @@ class Testing(unittest.TestCase):
     def test_Activity_regulation(self): # PASSES ALL
         self._test("Activity regulation")
 
-atexit.register(Testing.display_stats, Testing.stats)
+atexit.register(display_stats, TestingDataExtraction.stats)
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,10 +34,37 @@ def strip_pubmed(text: str) -> str:
 
 _ws_re = re.compile(r"\s+")
 
+_2normalizeORnot = {
+    "Domain [FT]" : False,
+    "Domain [CC]" : True,
+    "Protein families": False,
+    "Gene Ontology (molecular function)" : False,
+    "Gene Ontology (biological process)" : False,
+    "Interacts with" : False,
+    "Function [CC]" : True,
+    "Catalytic activity" : False,
+    "EC number" : False,
+    "Pathway" : True,
+    "Rhea ID" : False,
+    "Cofactor" : False,
+    "Activity regulation" : True
+}
+
+_TRIM_PUNCT = re.compile(r'(^[^\w]+|[^\w]+$)')
+_CLEAN_PUNCT = re.compile(r'[^A-Za-z0-9\s\-/]')
+_MULTI_WS = re.compile(r'\s+')
+
 def normalize(s: str) -> str:
-    s = _ws_re.sub(" ", s.strip().casefold())
-    s = s.rstrip(" .;,")
-    return s
+    # remove whitespace at the ends
+    s = s.strip()
+    # remove leading/trailing non-word characters
+    s = _TRIM_PUNCT.sub('', s)
+    # remove all other punctuation except hyphens/slashes
+    s = _CLEAN_PUNCT.sub('', s)
+    # collapse runs of spaces
+    s = _MULTI_WS.sub(' ', s)
+    # make lowercase
+    return s.lower()
 
 def _preprocess_col_helper(col_name: str, apply_norm: bool = True, apply_strip_pubmed: bool = True):
     unknown = set()
@@ -50,22 +77,28 @@ def _preprocess_col_helper(col_name: str, apply_norm: bool = True, apply_strip_p
         text = strip_pubmed(value) if apply_strip_pubmed else value
 
         try:
+            _2normlize = _2normalizeORnot[col_name] and apply_norm
+        except KeyError:
+            _2normlize = apply_norm
+
+        try:
             regex = _info_extr_patterns[col_name]
             matches = re.findall(regex, text)
         except KeyError:
             if col_name not in unknown:
                 print(f"No preprocessing rule for '{col_name}' — leaving as is.")
                 unknown.add(col_name)
-            return normalize(text) if apply_norm else text
+
+            return normalize(text) if _2normlize else text
 
         if not matches:
-            return normalize(text) if apply_norm else text
+            return normalize(text) if _2normlize else text
 
         if len(matches) == 1:
             res = matches[0]
-            return normalize(res) if apply_norm else res
+            return normalize(res) if _2normlize else res
 
-        cleaned = [normalize(m) for m in matches] if apply_norm else matches
+        cleaned = [normalize(m) for m in matches] if _2normlize else matches
         return tuple(dict.fromkeys(cleaned))
 
     return _inner
@@ -75,6 +108,4 @@ def preprocess_col(df: pd.DataFrame, col_name: str) -> None:
 
 
 if __name__ == "__main__":
-    s = "DOMAIN 229..339; /note=\"SpaA-like prealbumin fold\"; /evidence=\"ECO:0000259|Pfam:PF17802\"; DOMAIN 371..406; /note=\"Gram-positive cocci surface proteins LPxTG\"; /evidence=\"ECO:0000259|Pfam:PF00746\""
-    m = re.findall(_info_extr_patterns["Domain [FT]"], s)
-    print(m)
+    pass
