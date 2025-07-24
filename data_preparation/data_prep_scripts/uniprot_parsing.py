@@ -76,7 +76,7 @@ def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None) -> list:
 
     return list(unirefs)
 
-def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], batch_size: int = 100,
+def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields_example2, batch_size: int = 100,
                   rps: float = 10, filter_out_bad_ids: bool = True, subroutine: bool = False) -> pd.DataFrame:
 
     if filter_out_bad_ids and not subroutine:
