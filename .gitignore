@@ -2,15 +2,15 @@
 *
 
 # BUT
-!data_preparation/
-!data_preparation/notebooks/
-!data_preparation/notebooks/*.ipynb
-!data_preparation/data_prep_scripts/
-!data_preparation/data_prep_scripts/*.py
-!data_preparation/data_prep_scripts/tests/
-!data_preparation/data_prep_scripts/tests/*.py
-!data_preparation/data_prep_scripts/tests/testing_data/
-!data_preparation/data_prep_scripts/tests/testing_data/*.json
+!dataset_curation/
+!dataset_curation/notebooks/
+!dataset_curation/notebooks/*.ipynb
+!dataset_curation/scripts/
+!dataset_curation/scripts/*.py
+!dataset_curation/scripts/tests/
+!dataset_curation/scripts/tests/*.py
+!dataset_curation/scripts/tests/examples/
+!dataset_curation/scripts/tests/examples/*.json
 # ---------------------------------------------------------------
 !ML/
 !ML/*.py

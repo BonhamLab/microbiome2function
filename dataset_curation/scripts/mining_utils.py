@@ -12,8 +12,6 @@ import re
 import logging
 from datetime import datetime
 from math import ceil
-# pkg:
-from .data_preparation_utils import preprocess_col
 # env:
 from dotenv import load_dotenv
 load_dotenv()
@@ -25,6 +23,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+# *-----------------------------------------------*
+#                      GLOBALS
+# *-----------------------------------------------*
 
 recommended_fields_example1 = [
     "accession", "ft_domain", "cc_domain", "protein_families", "go_f", "go_p",
@@ -38,7 +40,11 @@ recommended_fields_example2 = [
     "ec", "cc_pathway", "rhea", "cc_cofactor", "sequence"
 ]
 
-def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None) -> list:
+# *-----------------------------------------------*
+#                      UTILS
+# *-----------------------------------------------*
+
+def ids_from_tsv(path_: str) -> list:
 
     unirefs = set()
     uniclusts = set()
@@ -55,29 +61,11 @@ def unirefs_from_tsv(path_, uniclust_to_uniref_tsv=None) -> list:
         if uniclust_match:
             uniclusts.add(uniclust_match.group(1))
     print(f"Successfully extracted {len(unirefs)} UniRef90(s) and {len(uniclusts)} UniClust90(s)")
-    unmatched_uniclusts_count = 0
-    if uniclust_to_uniref_tsv is not None:
-        print(f"Now attempting to map the {len(uniclusts)} UniClust90(s) to UniRef90 id(s)",
-              f"using the {os.path.basename(uniclust_to_uniref_tsv)} mapping")
-        map_df = pd.read_csv(uniclust_to_uniref_tsv, sep="\t", header=None, names=["uniclust_id", "uniref_id"])
-        map_df["uniclust_id"] = map_df["uniclust_id"].astype(str)
-        id_to_uniref = dict(zip(map_df["uniclust_id"], map_df["uniref_id"]))
-        for id in tqdm(uniclusts, desc=f"Attempting to map {len(uniclusts)} UniClusts to UniRefs"):
-            try:
-                uniref = id_to_uniref[id]
-            except KeyError:
-                unmatched_uniclusts_count += 1
-                continue
-            unirefs.add(uniref)
-    else:
-        unmatched_uniclusts_count = len(uniclusts)
-    
-    print(f"{unmatched_uniclusts_count} UniClust90(s) was/were not mapped to UniRef90s and were dropped")
 
-    return list(unirefs)
+    return list(unirefs), list(uniclusts)
 
-def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str] = recommended_fields_example2, batch_size: int = 100,
-                  rps: float = 10, filter_out_bad_ids: bool = True, subroutine: bool = False) -> pd.DataFrame:
+def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], batch_size: int = 1000,
+                  rps: float = 20, filter_out_bad_ids: bool = True, subroutine: bool = False) -> pd.DataFrame:
 
     if filter_out_bad_ids and not subroutine:
         p1 = r"^UNK"; p2 = r"^UPI"
@@ -164,36 +152,11 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str] = recom
 
     return DF
 
-def process_entries(df: pd.DataFrame) -> pd.DataFrame:
-    new_df = df.copy(deep=True)
-    for col_name in new_df.columns:
-        preprocess_col(new_df, col_name)
-    return new_df
-
-def tsv2df(tsv_path: str, uniclust_map_path: str, save: bool = True, save2dir: str = None):
-    unirefs: List[str] = unirefs_from_tsv(tsv_path, uniclust_map_path)
-    df: pd.DataFrame = process_entries(retrieve_fields_for_unirefs(unirefs, rps=15))
-    if save:
-        if save2dir is None:
-            raise RuntimeError("if 'save' is True, 'save2dir' argument must be provided")
-        save2path = os.path.join(save2dir, os.path.basename(tsv_path).replace("tsv", "csv"))
-        df.to_csv(save2path)
-    return df
-
-def process_all_tsvs(tsv_files_dir: str, uniclust_map_path: str, save2dir: str = None):
-    if save2dir is None:
-        save2dir = os.getcwd()
-    files = [os.path.join(tsv_files_dir, file) for file in os.listdir(tsv_files_dir)]
-    for file in files:
-        if file.endswith("_genefamilies.tsv"):
-            tsv2df(file, uniclust_map_path, save=True)
-            print("Successfully processed: ", os.path.basename(file))
-
 
 __all__ = [
     "unirefs_from_tsv",
     "retrieve_fields_for_unirefs",
-    "process_entries",
-    "tsv2df",
-    "process_all_tsvs"
 ]
+
+if __name__ == "__main__":
+    pass

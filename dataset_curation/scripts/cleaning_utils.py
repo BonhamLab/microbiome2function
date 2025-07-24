@@ -1,6 +1,10 @@
 import pandas as pd
 import re
 
+# *-----------------------------------------------*
+#                      GLOBALS
+# *-----------------------------------------------*
+
 _info_extr_patterns = {
     "Domain [FT]" : re.compile(r'DOMAIN\s(\d+..\d+)'), # <-- AA-seq fragment;
     # ^^^ use 're.compile(r'/note="([^"]+)"')' to extract human-readable description of the domain
@@ -22,18 +26,6 @@ _inline_re = re.compile(r"\s*\(PubMed:\d+(?:\s*,\s*PubMed:\d+)*\)")
 
 _brace_re  = re.compile(r"\s*\{[^}]*PubMed:[^}]*\}")
 
-def strip_pubmed(text: str) -> str:
-    if not isinstance(text, str):
-        return text
-    # in parens
-    text = _inline_re.sub("", text)
-    # in braces
-    text = _brace_re.sub("", text)
-    # collapse any accidental double‑spaces
-    return re.sub(r"\s{2,}", " ", text).strip()
-
-_ws_re = re.compile(r"\s+")
-
 _2normalizeORnot = {
     "Domain [FT]" : False,
     "Domain [CC]" : True,
@@ -54,7 +46,21 @@ _TRIM_PUNCT = re.compile(r'(^[^\w]+|[^\w]+$)')
 _CLEAN_PUNCT = re.compile(r'[^A-Za-z0-9\s\-/]')
 _MULTI_WS = re.compile(r'\s+')
 
-def normalize(s: str) -> str:
+# *-----------------------------------------------*
+#                      UTILS
+# *-----------------------------------------------*
+
+def _strip_pubmed(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    # in parens
+    text = _inline_re.sub("", text)
+    # in braces
+    text = _brace_re.sub("", text)
+    # collapse any accidental double‑spaces
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+def _normalize(s: str) -> str:
     # remove whitespace at the ends
     s = s.strip()
     # remove leading/trailing non-word characters
@@ -66,7 +72,7 @@ def normalize(s: str) -> str:
     # make lowercase
     return s.lower()
 
-def _preprocess_col_helper(col_name: str, apply_norm: bool = True, apply_strip_pubmed: bool = True):
+def _clean_col_helper(col_name: str, apply_norm: bool = True, apply_strip_pubmed: bool = True):
     unknown = set()
 
     def _inner(value: str):
@@ -74,7 +80,7 @@ def _preprocess_col_helper(col_name: str, apply_norm: bool = True, apply_strip_p
         if not isinstance(value, str):
             return value
         
-        text = strip_pubmed(value) if apply_strip_pubmed else value
+        text = _strip_pubmed(value) if apply_strip_pubmed else value
 
         try:
             _2normlize = _2normalizeORnot[col_name] and apply_norm
@@ -89,23 +95,34 @@ def _preprocess_col_helper(col_name: str, apply_norm: bool = True, apply_strip_p
                 print(f"No preprocessing rule for '{col_name}' — leaving as is.")
                 unknown.add(col_name)
 
-            return normalize(text) if _2normlize else text
+            return _normalize(text) if _2normlize else text
 
         if not matches:
-            return normalize(text) if _2normlize else text
+            return _normalize(text) if _2normlize else text
 
         if len(matches) == 1:
             res = matches[0]
-            return normalize(res) if _2normlize else res
+            return _normalize(res) if _2normlize else res
 
-        cleaned = [normalize(m) for m in matches] if _2normlize else matches
+        cleaned = [_normalize(m) for m in matches] if _2normlize else matches
         return tuple(dict.fromkeys(cleaned))
 
     return _inner
 
-def preprocess_col(df: pd.DataFrame, col_name: str) -> None:
-    df[col_name] = df[col_name].apply(_preprocess_col_helper(col_name))
+def clean_col(df: pd.DataFrame, col_name: str) -> None:
+    df[col_name] = df[col_name].apply(_clean_col_helper(col_name))
 
+def clean_all_entries(df: pd.DataFrame) -> pd.DataFrame:
+    new_df = df.copy(deep=True)
+    for col_name in new_df.columns:
+        clean_col(new_df, col_name)
+    return new_df
+
+
+__all__ = [
+    "clean_col",
+    "clean_all_entries",
+]
 
 if __name__ == "__main__":
     pass

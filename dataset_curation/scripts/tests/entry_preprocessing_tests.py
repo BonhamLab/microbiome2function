@@ -3,7 +3,7 @@ import sys, pathlib
 # 1 directory up from /tests  -->  /data_prep_scripts
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from data_preparation_utils import _preprocess_col_helper
+from dataset_curation.scripts.cleaning_utils import _preprocess_col_helper
 # ---------------------------------------------------------
 
 import unittest
