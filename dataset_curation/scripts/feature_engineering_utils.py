@@ -1,4 +1,5 @@
 import re
+import os
 import pandas as pd
 from numpy import nan
 from typing import Union, List, Tuple
@@ -7,6 +8,17 @@ import torch
 # *-----------------------------------------------*
 #                      UTILS
 # *-----------------------------------------------*
+
+# OPENAI API
+
+# env:
+from dotenv import load_dotenv
+load_dotenv()
+
+_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+from openai import OpenAI
+client = OpenAI(api_key=_OPENAI_API_KEY)
 
 # *-----------------------------------------------*
 #                    ft_domain
@@ -92,7 +104,6 @@ def process_ft_domain(df: pd.DataFrame, model, tokenizer, drop_redundant_cols: b
 # *-----------------------------------------------*
 #                    cc_domain
 # *-----------------------------------------------*
-
 
 
 
