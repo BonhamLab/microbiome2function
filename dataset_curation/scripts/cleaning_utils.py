@@ -112,7 +112,7 @@ def _clean_col_helper(col_name: str, apply_norm: bool = True, apply_strip_pubmed
 def clean_col(df: pd.DataFrame, col_name: str) -> None:
     df[col_name] = df[col_name].apply(_clean_col_helper(col_name))
 
-def clean_all_entries(df: pd.DataFrame) -> pd.DataFrame:
+def clean_all_cols(df: pd.DataFrame) -> pd.DataFrame:
     new_df = df.copy(deep=True)
     for col_name in new_df.columns:
         clean_col(new_df, col_name)
@@ -121,7 +121,7 @@ def clean_all_entries(df: pd.DataFrame) -> pd.DataFrame:
 
 __all__ = [
     "clean_col",
-    "clean_all_entries",
+    "clean_all_cols",
 ]
 
 if __name__ == "__main__":

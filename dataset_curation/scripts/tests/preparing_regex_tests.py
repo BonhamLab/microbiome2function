@@ -13,3 +13,7 @@ def sample(df: DataFrame, n_rows: int, of_col: "str", seed: int = 1) -> list:
     total = df[mask][of_col]
     subset = total.sample(n=n_rows, random_state=seed)
     return subset
+
+
+if __name__ == "__main__":
+    pass

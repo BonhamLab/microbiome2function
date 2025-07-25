@@ -2,6 +2,7 @@
 import requests
 import pandas as pd
 from numpy import nan
+
 # builtins:
 import os
 import time
@@ -9,23 +10,13 @@ import io
 from typing import List
 import re
 import logging
-from datetime import datetime
 from math import ceil
-# env:
-from dotenv import load_dotenv
-load_dotenv()
-LOGS_DIR = os.getenv("LOGS_DIR")
-
-logging.basicConfig(
-    filename=os.path.join(LOGS_DIR, f"uniprot_parsing_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log"),
-    filemode="a",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
 
 # *-----------------------------------------------*
 #                      GLOBALS
 # *-----------------------------------------------*
+
+_logger = logging.getLogger(__name__)
 
 recommended_fields_example1 = [
     "accession", "ft_domain", "cc_domain", "protein_families", "go_f", "go_p",
@@ -69,11 +60,11 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], batch_
     if filter_out_bad_ids and not subroutine:
         p1 = r"^UNK"; p2 = r"^UPI"
         valid_ids = [id_ for id_ in uniref_ids if not (re.match(p1, id_) or re.match(p2, id_))]
-        logging.info(f"Filtered out {len(uniref_ids) - len(valid_ids)} id(s) -- every one prefixed with either 'UNK' or 'UPI'")
+        _logger.info(f"Filtered out {len(uniref_ids) - len(valid_ids)} id(s) -- every one prefixed with either 'UNK' or 'UPI'")
         print(f"Filtered out {len(uniref_ids) - len(valid_ids)} corrupt id(s)")
         uniref_ids = valid_ids
 
-    logging.info(
+    _logger.info(
         f"Started retrieving {fields} for {len(uniref_ids)} IDs"
     )
     
@@ -99,7 +90,7 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], batch_
         if fields:
             params["fields"] = ",".join(fields)
         
-        logging.info(f"Query params: {params}")
+        _logger.info(f"Query params: {params}")
         try:
             resp = requests.get(
                 "https://rest.uniprot.org/uniprotkb/search",
@@ -108,10 +99,10 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], batch_
             )
             resp.raise_for_status()
         except requests.HTTPError as e:
-            logging.warning(f"HTTP error on batch {batch_idx}: {e}")
+            _logger.warning(f"HTTP error on batch {batch_idx}: {e}")
             if batch_size <= 1:
                 print(f"❌ Couldn't retrieve data for {batch} \nDropping and moving on")
-                logging.warning(f"Dropping ID(s): {batch} and moving on")
+                _logger.warning(f"Dropping ID(s): {batch} and moving on")
                 continue
             # split the batch and retry
             sub_df = retrieve_fields_for_unirefs(
@@ -124,7 +115,7 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], batch_
                 dfs.append(sub_df)
             continue
         except Exception as e:
-            logging.error(f"Unexpected error on batch {batch_idx}: {e}")
+            _logger.error(f"Unexpected error on batch {batch_idx}: {e}")
             continue
 
         file_view = io.StringIO(resp.text)
