@@ -14,6 +14,7 @@ __all__ = [
     "unirefs_from_multiple_files",
     "retrieve_fields_for_unirefs",
     "process_uniref_batches",
+    "merge_dfs",
     # cleaning utils
     "clean_col",
     "clean_all_cols",

@@ -136,6 +136,7 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], reques
         time.sleep(1.0 / rps)
     
     if not subroutine:
+        _logger.info(f"Processed {(request_id)}/{total_requests} requests.")
         _logger.info("Finished fetching the data")
 
     # stitch together or return an empty frame with correct columns
@@ -149,9 +150,16 @@ def retrieve_fields_for_unirefs(uniref_ids: List[str], fields: List[str], reques
     DF = DF.replace("", nan)
     DF.set_index("Entry", inplace=True, drop=True)
     
+    original_DF_length = len(DF)
+
     subset = list(DF.columns)
     subset.remove("Sequence")
     DF.dropna(how="all", subset=subset, inplace=True)
+
+    rows_dropped = original_DF_length - len(DF)
+    if rows_dropped > 0:
+        _logger.info(f"Dropped {rows_dropped} UniRef90s that did not have the requested data associated with them"
+                    if rows_dropped >1 else f"Dropped a UniRef90 that did not have the requested data associated with it")
 
     return DF
 
@@ -160,28 +168,52 @@ def process_uniref_batches(uniref_ids: List[str], fields: List[str], batch_size=
                 filter_out_bad_ids: bool = True):
 
     total_ids = len(uniref_ids)
+    batches_to_process= ceil(total_ids / batch_size)
+
+    processed_batches = 0
     # process in batches
     for request_id, start in enumerate(range(0, total_ids, batch_size), start=1):
         end = start + batch_size
         batch = uniref_ids[start:end]
 
-        if save_to_dir is None:
-             _logger.warning(f"save_to_dir is set to None! Repsonse to the API request #{request_id} will discarded")
-             file = None
-        else:
-            file = os.path.join(save_to_dir, f'batch_{request_id}.csv')
-            _logger.info(f"Repsonse to the API request #{request_id} will be saved at {file}")
+        _logger.info(f"Submitting {request_id}/{batches_to_process} batch of API requests with {len(batch)} entries")
 
-        retrieve_fields_for_unirefs(uniref_ids=batch,
+        data = retrieve_fields_for_unirefs(uniref_ids=batch,
                                     fields=fields,
                                     request_size=single_api_request_size,
                                     rps=rps,
-                                    filter_out_bad_ids=filter_out_bad_ids
-                                    ).to_csv(path_or_buf=file,
-                                             index=True)
+                                    filter_out_bad_ids=filter_out_bad_ids)
         
-def merge_dfs():
-    pass
+        _logger.info(f"Received {len(data)} non-empty rows of data")
+
+        if save_to_dir is None:
+             _logger.warning(f"save_to_dir is set to None! The data will discarded")
+             file = None
+        else:
+            file = os.path.join(save_to_dir, f'batch_{request_id}.csv')
+            _logger.info(f"The data will be saved at {file}")
+
+        data.to_csv(path_or_buf=file, index=True)
+        processed_batches += 1
+    
+    if processed_batches < batches_to_process:
+        _logger.error(f"Did not manage to process all the batches of UniProt requests: only {processed_batches}/{batches_to_process} were processed")
+        
+    return save_to_dir
+        
+def merge_dfs(dir_path: str) -> pd.DataFrame:
+    file_paths = sorted([os.path.join(dir_path, file_name) 
+                        for file_name in os.listdir(dir_path)
+                        if file_name.endswith(".csv")])
+
+    if not file_paths:
+        raise FileNotFoundError(f"No files found in {dir_path}")
+
+    dfs = [pd.read_csv(fp) for fp in file_paths]
+    merged = pd.concat(dfs, ignore_index=True)
+    merged.set_index("Entry", inplace=True, drop=True)
+
+    return merged
 
 
 __all__ = [
@@ -190,7 +222,8 @@ __all__ = [
     "recommended_fields_example2",
     "ids_from_tsv",
     "retrieve_fields_for_unirefs",
-    "process_uniref_batches"
+    "process_uniref_batches",
+    "merge_dfs"
 ]
 
 if __name__ == "__main__":
