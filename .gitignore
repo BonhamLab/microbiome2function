@@ -6,6 +6,7 @@
 !dataset_curation/*.py
 !dataset_curation/for_hpc_use/
 !dataset_curation/for_hpc_use/*.py
+!dataset_curation/for_hpc_use/*.sh
 !dataset_curation/notebooks/
 !dataset_curation/notebooks/*.ipynb
 !dataset_curation/scripts/
