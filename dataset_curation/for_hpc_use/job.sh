@@ -22,6 +22,7 @@ export PYTHONPATH=/cluster/home/myehor01/data_processing/microbiome2function/dat
 # env vars
 export SAMPLE_FILES=/cluster/tufts/bonhamlab/shared/sequencing/processed/humann/main
 export SAVE_DATA_TO_DIR=/cluster/home/myehor01/data_processing
+export LOGS_DIR=/cluster/home/myehor01/data_processing
 export JOB_NAME=$SLURM_JOB_NAME
 
 cd /cluster/home/myehor01/data_processing/microbiome2function/dataset_curation

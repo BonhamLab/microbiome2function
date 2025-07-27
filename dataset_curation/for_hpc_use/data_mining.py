@@ -1,6 +1,7 @@
 from scripts import (recommended_fields_example2, 
                      unirefs_from_multiple_files,
-                     process_uniref_batches)
+                     process_uniref_batches,
+                     configure_logging)
 import re
 import os
 
@@ -8,10 +9,14 @@ import os
 gene_fam_files_dir = os.getenv("SAMPLE_FILES")
 output_dir = os.getenv("SAVE_DATA_TO_DIR")
 job_name = os.getenv("JOB_NAME")
+logs_dir = os.getenv("LOGS_DIR")
 
 assert gene_fam_files_dir, "SAMPLE_FILES env var was not set!"
 assert output_dir, "SAVE_DATA_TO_DIR env var was not set!"
 assert job_name, "JOB_NAME env var was not set!"
+assert logs_dir, "LOGS_DIR env var was not set!"
+
+configure_logging(logs_dir)
 
 accession_nums = unirefs_from_multiple_files(gene_fam_files_dir, 
                                              pattern=re.compile(r".*_genefamilies\.tsv$"))
