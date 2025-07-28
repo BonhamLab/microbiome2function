@@ -1,18 +1,18 @@
 # TASKS:
 feature_preprocessing:
-[] "Domain [FT]" :
+[X] "Domain [FT]" :
     (X) regex Domain AA sequence extraction -> (X) embedding via ProtT5
 
-[] "Domain [CC]" :
+[X] "Domain [CC]" :
     (X) regex Free-text extraction -> (X) embedding via openai text-embedding-3-large
 
 [] "Gene Ontology (molecular function)" :
-    (X) regex extract GO -> () dimensionaly reduction via GO DAG -> () embed as k-hot"
+    (X) regex extract GO -> (X) dimensionaly reduction via GO DAG -> () embed as k-hot"
 
 [] "Gene Ontology (biological process)" :
-    (X) regex extract GO -> () dimensionaly reduction via GO DAG -> () embed as k-hot"
+    (X) regex extract GO -> (X) dimensionaly reduction via GO DAG -> () embed as k-hot"
 
-[] "Function [CC]" : 
+[X] "Function [CC]" : 
     (X) regex Free-text extraction -> () embedding via openai text-embedding-3-large; preserve vector representation of each function for KNN style prediction down the road"
 
 [] "Catalytic activity" :
@@ -21,8 +21,8 @@ feature_preprocessing:
 [] "EC number" : 
     (X) regex extract ec # -> () dimensionaly reduction via EC hierarchy -> () embed as k-hot"
 
-[] "Pathway" :
-    (X) regex extract pathway -> () dimensionaly reduction via KEGG/Rhea pathway hierarchy -> () embed as k-hot"
+    [] "Pathway" :
+        (X) regex extract pathway -> () dimensionaly reduction via KEGG/Rhea pathway hierarchy -> () embed as k-hot"
 
 [] "Rhea ID" : 
     (X) regex extract rhea id -> () embed as k-hot"

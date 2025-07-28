@@ -1,10 +1,8 @@
 import re
-import os
 import pandas as pd
 import numpy as np
 from typing import Union, List, Tuple, Dict
-import torch
-from .embedding_utils import FreeTXTEmbedder
+from .embedding_utils import FreeTXTEmbedder, AAChainEmbedder, EncodeGO
 
 # *-----------------------------------------------*
 #                      UTILS
@@ -43,33 +41,18 @@ def _get_domain_sequences(domain_entry: str, full_seq: str) -> List[str]:
     ranges = _extract_aa_ranges(domain_entry)
     return [full_seq[s:e] for s, e in ranges]
 
-# EMBEDDING FUNCTIONS:
-
-# NOTE: really need to implement batching for this!
-@torch.no_grad()
-def _embed_sequence(seq: str, model, tokenizer) -> np.ndarray:
-    """
-    Turn one amino-acid string into a ProtT5 embedding vector of shape [D]
-    """
-    spaced = " ".join(seq) # ProtT5 expects spaces between letters
-    tokens = tokenizer(spaced, return_tensors="pt")
-    out = model(**tokens).last_hidden_state # (batch=1, seq_len, hidden_dim), so (seq_len, hidden_dim) basically
-    residues = out[0, 1:-1, :] # drop special tokens -> (seq_len-2, hidden_dim)
-    emb_tensor = residues.mean(dim=0) # pool over length: (seq_len-2, hidden_dim) -> (hidden_dim)
-
-    return emb_tensor.cpu().numpy()
-
-def _pool_domain_embeddings(seqs: List[str], model, tokenizer) -> Union[np.ndarray, float]:
+# embed domains' AA sequences
+def _pool_domain_embeddings(seqs: List[str], embedder: AAChainEmbedder) -> Union[np.ndarray, float]:
     if not seqs:
         # if no annotated domains, return a zero vector
         return np.nan
-    embs = [_embed_sequence(s, model, tokenizer) for s in seqs] # list of [hidden_dim]
+    embs = [embedder.embed_sequence(s) for s in seqs] # list of [hidden_dim]
     
     # stack into shape [N, hidden_dim] -> mean‑pool over the first axis -> [hidden_dim]
     return embs[0] if len(embs) == 1 else embs
 
-# DATAFRAME PROCESSOR:
-def process_ft_domain(df: pd.DataFrame, model, tokenizer, drop_redundant_cols: bool = True, inplace=False) -> pd.DataFrame:
+# apply to the whole 'Domain [FT]' col
+def process_ft_domain(df: pd.DataFrame, embedder: AAChainEmbedder, drop_redundant_cols: bool = True, inplace=False) -> pd.DataFrame:
     if not inplace:
         df = df.copy(deep=True)
 
@@ -83,7 +66,7 @@ def process_ft_domain(df: pd.DataFrame, model, tokenizer, drop_redundant_cols: b
     df["tmp_domain_seqs"] = df.apply(extract_or_empty, axis=1)
 
     # embed + pool into one vector
-    df["domain_embedding"] = df["tmp_domain_seqs"].apply(_pool_domain_embeddings, model=model, tokenizer=tokenizer)
+    df["domain_embedding"] = df["tmp_domain_seqs"].apply(_pool_domain_embeddings, embedder=embedder)
 
     # drop raw columns if desired
     if drop_redundant_cols:

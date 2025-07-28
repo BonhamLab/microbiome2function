@@ -3,7 +3,7 @@ from .mining_utils import *
 from .cleaning_utils import *
 from .feature_engineering_utils import *
 from .embedding_utils import *
-from .logging import configure_logging
+from .lgging import configure_logging
 
 
 __all__ = [
