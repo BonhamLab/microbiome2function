@@ -8,7 +8,6 @@ import atexit
 import torch
 from sklearn.preprocessing import MultiLabelBinarizer
 from goatools.obo_parser import GODag
-import re
 
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 #                           DENSE EMBEDDINGS
@@ -169,7 +168,10 @@ class GOEncoder(MultiHotEncoder):
             raise FileNotFoundError(f"OBO not found: {obo_path}")
         self.godag = GODag(obo_path)
 
-    def _collapse_to_depth(self, go_ids, k: int) -> Tuple[str, ...]:
+    def _collapse_to_depth(self, go_ids: Union[str, tuple], k: int) -> Tuple[str, ...]:
+        if not isinstance(go_ids, tuple):
+            go_ids = [go_ids]
+
         kept = set()
         for gid in go_ids:
             if gid not in self.godag:
@@ -187,32 +189,36 @@ class GOEncoder(MultiHotEncoder):
         df[col] = enc_info["encodings"].tolist()
         return df, enc_info["class_labels"]
 
-class EncodeEC(MultiHotEncoder):
+class ECEncoder(MultiHotEncoder):
     def __init__(self):
-        self.mlb = MultiLabelBinarizer()
+        super().__init__()
 
-    def collapse_to_level(self, ec_str: str, level: int):
-        ec_list = ec_str.split(".")
+    def _collapse_EC_to_level(self, EC: str, level: int):
+        ec_list = EC.split(".")
         keep = ec_list[:level]
-        if any([ bool(re.match(r"[^\d]*", s)) for s in keep]):
+        if any([not s.isdigit() for s in keep]):
             return np.nan
         else:
             return ".".join(keep)
         
+    def _collapse_EC_entry_to_level(self, ECs: Union[str, tuple], level: int):
+        if not isinstance(ECs, tuple):
+            ECs = [ECs]
+        return tuple([self._collapse_EC_to_level(ec) for ec in ECs])
+
     def process_ec(self, df: pd.DataFrame, level: int, inplace=False):
         df = df if inplace else df.copy(deep=True)
-        collapsed = df["EC Number"].map(lambda ecs: self.collapse_to_level(ecs, level))
+        collapsed = df["EC Number"].map(lambda ecs: self._collapse_EC_entry_to_level(ecs, level))
         enc_info = self.encode(collapsed)
         df["EC Number"] = enc_info["encodings"].tolist()
         return df, enc_info["class_labels"]
-
 
 __all__ = [
     "MultiHotEncoder",
     "GOEncoder",
     "FreeTXTEmbedder",
     "AAChainEmbedder",
-    "EncodeEC"
+    "ECEncoder"
 ]
 
 if __name__ == "__main__":

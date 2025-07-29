@@ -2,7 +2,11 @@ import re
 import pandas as pd
 import numpy as np
 from typing import Union, List, Tuple, Dict
-from .embedding_utils import FreeTXTEmbedder, AAChainEmbedder, GOEncoder
+from .embedding_utils import (FreeTXTEmbedder,
+                              AAChainEmbedder,
+                              GOEncoder,
+                              ECEncoder,
+                              MultiHotEncoder)
 
 __all__ = list()
 def export(func):
@@ -88,9 +92,9 @@ def embed_ft_domains(df: pd.DataFrame, embedder: AAChainEmbedder, drop_redundant
     
     return df
 
-# *-----------------------------------------------*
-# cc_domain, cc_function, cc_catalytic_activity
-# *-----------------------------------------------*
+# *--------------------------------------------------------*
+# cc_domain, cc_function, cc_catalytic_activity, cc_pathway
+# *--------------------------------------------------------*
 
 def unique_vals2embs_map(df: pd.DataFrame, col: str, embedder: FreeTXTEmbedder):
 
@@ -120,30 +124,34 @@ def embed_freetxt_cols(df: pd.DataFrame, cols: List[str], embedder: FreeTXTEmbed
 #                   go_mf & go_bp
 # *-----------------------------------------------*
 
-_goenc = GOEncoder()
-encode_go = _goenc.process_go
+_go_enc = GOEncoder()
+encode_go = _go_enc.process_go
 export(encode_go)
 
 # *-----------------------------------------------*
 #                       ec
 # *-----------------------------------------------*
 
-
-
-# *-----------------------------------------------*
-#                    cc_pathway
-# *-----------------------------------------------*
-
+_ec_enc = ECEncoder()
+encode_ec = _ec_enc.process_ec
+export(encode_ec)
 
 # *-----------------------------------------------*
 #                     rhea
 # *-----------------------------------------------*
 
+_rhea_enc = MultiHotEncoder()
+encode_rhea = _rhea_enc.encode
+export(encode_rhea)
 
 # *-----------------------------------------------*
 #                   cc_cofactor
 # *-----------------------------------------------*
 
+_cofactor_enc = MultiHotEncoder()
+encode_cofactor = _cofactor_enc.encode
+export(encode_cofactor)
 
-if __name__ == "__main__"
+
+if __name__ == "__main__":
     pass

@@ -1,15 +1,6 @@
 # TASKS:
 
-[] "Gene Ontology (molecular function)" :
-    (X) regex extract GO -> (X) dimensionaly reduction via GO DAG -> () embed as k-hot"
-
-[] "Gene Ontology (biological process)" :
-    (X) regex extract GO -> (X) dimensionaly reduction via GO DAG -> () embed as k-hot"
-
-[] "EC number" : 
-    (X) regex extract ec # -> () dimensionaly reduction via EC hierarchy -> () embed as k-hot"
-
-    [] "Pathway" :
+[] "Pathway" :
         (X) regex extract pathway -> () dimensionaly reduction via KEGG/Rhea pathway hierarchy -> () embed as k-hot"
 
 [] "Rhea ID" : 
