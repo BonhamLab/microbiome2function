@@ -6,6 +6,7 @@ from typing import Union, List, Tuple
 # third-party:
 import pandas as pd
 import numpy as np
+import zarr
 from .embedding_utils import (FreeTXTEmbedder,
                               AAChainEmbedder,
                               GOEncoder,
@@ -42,7 +43,13 @@ def vals2embs_map(df: pd.DataFrame, col: str, embedder: Union[AAChainEmbedder, F
     return val2emb_map
 
 def save_df(df: pd.DataFrame, zarr_file: str) -> None:
-    pass
+    root = zarr.group(zarr_file, overwrite=True)
+    for col in df.columns:
+       isna_mask = df[col].isna()
+       notna_mask = ~isna_mask
+       isna_accessions = df.index[isna_mask].sort()
+       notna_accessions = df.index[notna_mask].sort()
+       vecs = notna_accessions.to_list()
 
 def load_df(zarr_file: str) -> pd.DataFrame:
     pass
@@ -113,7 +120,7 @@ def embed_AAsequences(df: pd.DataFrame, embedder: AAChainEmbedder,
 #                   go_mf & go_bp
 # *-----------------------------------------------*
 
-_go_enc = GOEncoder(os.path.join(SCRIPT_DIR, "..", "dependencies", "go-basic.obo"))
+_go_enc = GOEncoder(os.path.join(SCRIPT_DIR, "dependencies", "go-basic.obo"))
 encode_go = _go_enc.encode_go
 
 # *-----------------------------------------------*

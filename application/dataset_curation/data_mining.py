@@ -1,25 +1,8 @@
-from scripts import (recommended_fields_example2, 
-                     unirefs_from_multiple_files,
-                     process_uniref_batches,
-                     configure_logging)
+from M2F import (extract_all_accessions_from_dir,
+                fetch_save_uniprotkb_batches,
+                configure_logging)
 import re
 import os
-
-_2normalizeORnot = {
-    "Domain [FT]" : False,
-    "Domain [CC]" : True,
-    "Protein families": False,
-    "Gene Ontology (molecular function)" : False,
-    "Gene Ontology (biological process)" : False,
-    "Interacts with" : False,
-    "Function [CC]" : True,
-    "Catalytic activity" : False,
-    "EC number" : False,
-    "Pathway" : True,
-    "Rhea ID" : False,
-    "Cofactor" : False,
-    "Activity regulation" : True
-}
 
 gene_fam_files_dir = os.getenv("SAMPLE_FILES")
 output_dir = os.getenv("SAVE_DATA_TO_DIR")
@@ -33,21 +16,23 @@ assert logs_dir, "LOGS_DIR env var was not set!"
 
 configure_logging(logs_dir)
 
-accession_nums = unirefs_from_multiple_files(gene_fam_files_dir, 
+accession_nums = extract_all_accessions_from_dir(gene_fam_files_dir, 
                                              pattern=re.compile(r".*_genefamilies\.tsv$"))
 
 
 out = os.path.join(output_dir, job_name + "_output_dir")
 os.makedirs(out, exist_ok=True)
 
-process_uniref_batches(
+fetch_save_uniprotkb_batches(
     uniref_ids=accession_nums,
-    fields=recommended_fields_example2,
+    fields=["accession", "ft_domain", "cc_domain",
+            "protein_families", "go_f", "go_p",
+            "cc_function", "cc_catalytic_activity",
+            "ec", "cc_pathway", "rhea", "cc_cofactor", "sequence"],
     batch_size=40_000,
     single_api_request_size=100,
     rps=10,
     save_to_dir=out,
-    filter_out_bad_ids=True
 )
 
 print(f"Mined data is available at {out}")

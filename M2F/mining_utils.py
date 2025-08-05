@@ -12,7 +12,7 @@ import requests
 import pandas as pd
 
 # local:
-import util
+from . import util
 
 # *-----------------------------------------------*
 #                      GLOBALS

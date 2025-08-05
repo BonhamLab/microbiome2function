@@ -35,13 +35,11 @@ This pipeline was built for large-scale **bioinformatics + ML workflows** and is
 ## Example Usage
 Data Mining:
 ```python
-from microbiome2function.scripts import (recommended_fields_example2, 
-                                        unirefs_from_multiple_files,
-                                        process_uniref_batches,
-                                        configure_logging)
+from M2F import (extract_all_accessions_from_dir,
+                fetch_save_uniprotkb_batches,
+                configure_logging)
 import re
 import os
-
 
 gene_fam_files_dir = os.getenv("SAMPLE_FILES")
 output_dir = os.getenv("SAVE_DATA_TO_DIR")
@@ -55,44 +53,30 @@ assert logs_dir, "LOGS_DIR env var was not set!"
 
 configure_logging(logs_dir)
 
-accession_nums = unirefs_from_multiple_files(gene_fam_files_dir, 
+accession_nums = extract_all_accessions_from_dir(gene_fam_files_dir, 
                                              pattern=re.compile(r".*_genefamilies\.tsv$"))
 
 
 out = os.path.join(output_dir, job_name + "_output_dir")
 os.makedirs(out, exist_ok=True)
 
-process_uniref_batches(
+fetch_save_uniprotkb_batches(
     uniref_ids=accession_nums,
-    fields=recommended_fields_example2,
+    fields=["accession", "ft_domain", "cc_domain",
+            "protein_families", "go_f", "go_p",
+            "cc_function", "cc_catalytic_activity",
+            "ec", "cc_pathway", "rhea", "cc_cofactor", "sequence"],
     batch_size=40_000,
     single_api_request_size=100,
     rps=10,
     save_to_dir=out,
-    filter_out_bad_ids=True
 )
 
 print(f"Mined data is available at {out}")
 ```
 Data Cleaning and Feature engineering:
 ```python
-import pandas as pd
-import microbiome2function.scripts as scripts
-
-txt_embedder = scripts.FreeTXTEmbedder(os.getenv("OPENAI_API_KEY"), "SMALL_OPENAI_MODEL",
-                                       cache_file_path="testing_cache", caching_mode="CREATE/OVERRIDE")
-aa_embedder = scripts.AAChainEmbedder("ESM2")
-
-df = pd.read_csv(os.getenv("FETCHED_DATA"), index_col="Entry")
-scripts.clean_all_cols(df, inplace=True)
-
-scripts.embed_ft_domains(df, aa_embedder, inplace=True)
-scripts.embed_freetxt_cols(df, ["Domain [CC]", "Function [CC]", "Catalytic activity", "Pathway"], txt_embedder, inplace=True)
-scripts.encode_go(df, "Gene Ontology (molecular function)", coverage_target=0.9, inplace=True)
-scripts.encode_go(df, "Gene Ontology (biological process)", coverage_target=0.9, inplace=True)
-scripts.encode_ec(df, coverage_target=0.9, inplace=True)
-scripts.encode_multihot(df, "Rhea ID", inplace=True)
-scripts.encode_multihot(df, "Cofactor", inplace=True)
+# TO BE ADDED
 ```
 
 ## Repository Structure
