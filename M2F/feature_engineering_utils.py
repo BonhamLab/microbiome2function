@@ -23,6 +23,9 @@ def max_pool(embeddings: List[np.ndarray]) -> np.ndarray:
     if not embeddings:
         raise ValueError("Cannot max pool empty list of embeddings")
     
+    if len({emb.shape for emb in embeddings}) != 1:
+        raise ValueError(f"Embedding shapes differ: {[emb.shape for emb in embeddings]}")
+
     if len(embeddings) == 1:
         return embeddings[0]
     
@@ -38,7 +41,10 @@ def vals2embs_map(df: pd.DataFrame, col: str, embedder: Union[AAChainEmbedder, F
     vals = [item
             for val in unique_vals
             for item in val
+            if item
         ] # flatten
+    if not vals:
+        return {} 
     val2emb_map = dict(zip(vals, embedder.embed_sequences(vals, batch_size)))
     return val2emb_map
 
@@ -57,7 +63,7 @@ def load_df(zarr_file: str) -> pd.DataFrame:
 def empty_tuples_to_NaNs(df: pd.DataFrame, inplace=False) -> None:
     if not inplace:
         df = df.copy(deep=True)
-    df.loc[:, :] = df.applymap(lambda x: np.nan if x == () else x)
+    df.loc[:, :] = df.map(lambda x: np.nan if x == () else x)
     return df
 
 # *--------------------------------------------------------*
@@ -88,32 +94,36 @@ def _domain_aa_ranges(domains: Tuple[str]) -> List[Tuple[int,int]]:
         ranges.append((start - 1, end))
     return ranges
 
-def _get_domain_sequences(domains: str, full_seq: str) -> List[str]:
-    ranges = _domain_aa_ranges(domains)
-    return [full_seq[s:e] for s, e in ranges]
+def _get_domain_sequences(domains: Tuple[str, ...], full_seq: Tuple[str]) -> List[str]:
+    # Note: need to do full_seq[0] because it's a singleton tuple
+    return [full_seq[0][s:e] for s, e in _domain_aa_ranges(domains)]
 
 def embed_ft_domains(df: pd.DataFrame, embedder: AAChainEmbedder,
-                     batch_size=128, inplace=False) -> pd.DataFrame:
+                     batch_size: int = 128, inplace: bool = False) -> pd.DataFrame:
     if not inplace:
         df = df.copy(deep=True)
-    
-    df.loc[:, "tmp_domain_seqs"] = df.apply(lambda row:
-                                _get_domain_sequences(row["Domain [FT]"], row["Sequence"]), axis=0)
+
+    df.loc[:, "tmp_domain_seqs"] = df.apply(
+        lambda row: tuple(_get_domain_sequences(row["Domain [FT]"], row["Sequence"])), axis=1
+    )
 
     embedding_map = vals2embs_map(df, "tmp_domain_seqs", embedder, batch_size)
-    
-    # embed + max pool into one vector
-    df.loc[:, "Domain [FT]"].map(lambda entry: max_pool([embedding_map[s] for s in entry])
-                                 if entry else np.nan)
+
+    df.loc[:, "Domain [FT]"] = df["tmp_domain_seqs"].map(
+        lambda entry: max_pool([embedding_map[s] for s in entry]) if entry else np.nan
+    )
+    df.drop(columns="tmp_domain_seqs", inplace=True)
     
     return df
 
 def embed_AAsequences(df: pd.DataFrame, embedder: AAChainEmbedder,
-                    batch_size: int, inplace=False) -> pd.DataFrame:
+                      batch_size: int = 128, inplace: bool = False) -> pd.DataFrame:
     if not inplace:
         df = df.copy(deep=True)
+
     embedding_map = vals2embs_map(df, "Sequence", embedder, batch_size)
-    df.loc[:, "Sequence"] = df.loc[:, "Sequence"].map(lambda entry: embedding_map(entry) if entry else np.nan)
+    df.loc[:, "Sequence"] = df["Sequence"].map(lambda s: embedding_map[s[0]] if s else np.nan)
+
     return df
 
 # *-----------------------------------------------*
@@ -138,6 +148,7 @@ __all__ = [
     "empty_tuples_to_NaNs",
     "encode_go",
     "encode_ec",
+    "encode_multihot",
     "save_df",
     "load_df"
 ]

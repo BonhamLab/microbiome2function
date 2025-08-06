@@ -87,7 +87,7 @@ def fetch_uniprotkb_fields(
     request_size: int = 100,
     rps: float = 10,
     max_retry: Optional[int | float] = float("inf"),
-    subroutine_call_count: int = 0
+    __subroutine_call_counts: int = 0
 ) -> pd.DataFrame:
     """Fetch selected UniProtKB fields for a list of accessions with batched requests.
 
@@ -98,7 +98,7 @@ def fetch_uniprotkb_fields(
     if request_size < 1:
         raise ValueError("request_size must be ≥ 1")
 
-    if subroutine_call_count == 0:
+    if __subroutine_call_counts == 0:
         _logger.info(f"Started retrieving {fields} for {len(uniref_ids)} ID(s)")
 
     dfs: list[pd.DataFrame] = []
@@ -106,18 +106,19 @@ def fetch_uniprotkb_fields(
     total_requests  = ceil(total_ids / request_size)
 
     # ---------Batched-data-retrieval---------
+    requested_fields = ",".join(fields)
     for request_id, start in enumerate(range(0, total_ids, request_size), start=1):
         end   = start + request_size
         batch = uniref_ids[start:end]
 
-        if subroutine_call_count == 0:
+        if __subroutine_call_counts == 0:
             _logger.info(f"Processed {(request_id - 1)}/{total_requests} requests; Querying {len(batch)} ID(s)…")
 
         params = {
             "format": "tsv",
             "size":   len(batch),
             "query":  " OR ".join(f"accession:{uid}" for uid in batch),
-            "fields": ",".join(fields),
+            "fields": requested_fields,
         }
 
         start_time = time.perf_counter()
@@ -128,7 +129,7 @@ def fetch_uniprotkb_fields(
 
         except requests.HTTPError as e:
             _logger.warning(f"HTTP error on request number {request_id}: {e}")
-            if request_size <= 1 or subroutine_call_count >= max_retry:
+            if request_size <= 1 or __subroutine_call_counts >= max_retry:
                 _logger.warning(f"Couldn't retrieve data for {batch}\nDropping and moving on")
             else:
                 new_size = max(1, request_size // 2)
@@ -138,7 +139,7 @@ def fetch_uniprotkb_fields(
                     request_size          = new_size,
                     rps                   = rps,
                     max_retry             = max_retry,
-                    subroutine_call_count = subroutine_call_count + 1,
+                    __subroutine_call_counts = __subroutine_call_counts + 1,
                 )
                 if not sub_df.empty:
                     dfs.append(sub_df)
@@ -159,7 +160,7 @@ def fetch_uniprotkb_fields(
         time.sleep(max(0, 1.0 / rps - elapsed))
 
     # ---------after-data-retrieval---------
-    if subroutine_call_count == 0:
+    if __subroutine_call_counts == 0:
         _logger.info(f"Processed {request_id}/{total_requests} requests.")
         _logger.info("Finished fetching the data")
 

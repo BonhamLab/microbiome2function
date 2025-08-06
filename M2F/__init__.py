@@ -27,6 +27,7 @@ __all__ = [
     "embed_freetxt_cols",
     "encode_go",
     "encode_ec",
+    "encode_multihot",
     "empty_tuples_to_NaNs",
     "save_df",
     "load_df"

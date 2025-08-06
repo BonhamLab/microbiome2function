@@ -123,8 +123,7 @@ def clean_col(
         df = df.copy(deep=True)
 
     cleaner = _clean_col_helper(col_name, apply_norm, apply_strip_pubmed)
-    df.loc[:, col_name] = df[col_name].map(cleaner)
-    df.loc[:, col_name].fillna(value=tuple(), inplace=True)
+    df.loc[:, col_name] = df[col_name].map(lambda entry: () if pd.isna(entry) else cleaner(entry))
 
     _logger.info(f"Finished processing '{col_name}'.")
     return df

@@ -7,13 +7,17 @@
 !M2F/dependencies/
 !M2F/dependencies/*
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-!application/
-!application/dataset_curation/
-!application/dataset_curation/*.py
-!application/dataset_curation/*.sh
-!application/model/
-!application/model/*.py
-!application/model/*.ipynb
+!examples/
+!examples/gatnn_model_end2end/
+!examples/gatnn_model_end2end/*.py
+!examples/gatnn_model_end2end/*.ipynb
+!examples/gatnn_model_end2end/dataset_curation/
+!examples/gatnn_model_end2end/dataset_curation/*.py
+!examples/gatnn_model_end2end/dataset_curation/*.sh
+!examples/gatnn_model_end2end/dataset_curation/*.ipynb
+!examples/
+!examples/*.py
+!examples/*.ipynb
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 !.gitignore
 !README.MD

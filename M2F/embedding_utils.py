@@ -134,7 +134,7 @@ class AAChainEmbedder:
             # input_ids            [B, L]
             # attention_mask       [B, L]  (1 for real tokens (residues + BOS/EOS), 0 for PAD)
             # special_tokens_mask  [B, L]  (1 for BOS/EOS/<mask>, 0 otherwise)
-
+            spec_mask = toks.pop("special_tokens_mask") 
             hidden_states = self.model(
                 **toks, output_hidden_states=True # returns all layer outputs.
             ).hidden_states[self.repr_idx]  # [B, L, D]
@@ -143,7 +143,7 @@ class AAChainEmbedder:
 
             # build a mask that excludes specials AND padding
             attn_mask = toks["attention_mask"].bool()
-            spec_mask = toks["special_tokens_mask"].bool()
+            spec_mask = spec_mask.bool()
             keep_mask = attn_mask & (~spec_mask) # attn_mask AND NOT(spec_mask)
 
             # pool
@@ -187,16 +187,16 @@ class FreeTXTEmbedder:
     def __init__(
         self, api_key: str, model: str,
         cache_file_path: Union[str, None] = None,
-        caching_mode: str = "NOT_CACHING", max_cache_size_kb: int = 10
+        caching_mode: str = "NOT_CACHING", max_cache_size_kb: int = 1000
     ):
 
         if model not in self.MODELS:
             raise ValueError(f"model must be one of {list(self.MODELS)}")
         if caching_mode not in self.CACHING_MODES:
             raise ValueError(f"caching_mode must be one of {self.CACHING_MODES}")
-        if not (0 < max_cache_size_kb < self.__available_RAM_KB):
-            raise ValueError(f"Invalid 'max_cache_size' value: expected a positive integer"
-                             f"value smaller than the amount of free RAM at 'FreeTXTEmbedder' instance creation")
+        if not (0 < max_cache_size_kb):
+            raise ValueError(f"Invalid 'max_cache_size_kb' value: expected a positive integer"
+                             f"received {max_cache_size_kb}")
 
         # -DB-----------------------------------------------
         if cache_file_path and caching_mode != "NOT_CACHING":
@@ -208,7 +208,7 @@ class FreeTXTEmbedder:
                     vec BLOB 
                 )
             """)
-            self._db.commit()
+            self._conn.commit()
             atexit.register(self._conn.close)
             self._LRU_cache = OrderedDict()
         else:
@@ -221,7 +221,7 @@ class FreeTXTEmbedder:
 
         self.client = OpenAI(api_key=api_key)
         self.model = FreeTXTEmbedder.MODELS[model]
-        self._LRU_cache_size_KB = 0
+        self._LRU_cache_size_kb = 0
 
     # ---------PRIVATE-----------
     def __db_lookup(self, s: str):
@@ -234,21 +234,16 @@ class FreeTXTEmbedder:
     def __LRU_lookup(self, s: str):
         return self._LRU_cache.get(s)
 
-    @property
-    def __available_RAM_KB(self):
-        mem = psutil.virtual_memory()
-        return mem.available / 1024
-
     @staticmethod
-    def __row_size_KB(s: str, emb: np.ndarray):
+    def __row_size_kb(s: str, emb: np.ndarray):
         return (sys.getsizeof(s) + emb.nbytes) / 1024
 
     def __update_LRU_cache_size(self, s: str, emb: np.ndarray, *, how: str):
         if how == "ADD":
-            self._LRU_cache_size_KB += self.__row_size_KB(s, emb)
+            self._LRU_cache_size_kb += self.__row_size_kb(s, emb)
             return
         elif how == "DEL":
-            self._LRU_cache_size_KB -= self.__row_size_KB(s, emb)
+            self._LRU_cache_size_kb -= self.__row_size_kb(s, emb)
             return
         else:
             raise ValueError(f"Invalid 'how' argument was passed. Expected 'ADD' or 'DEL', but {how} was given")
@@ -278,12 +273,22 @@ class FreeTXTEmbedder:
     def _store(self, s: str, emb: np.ndarray):
         if self.caching_mode == "NOT_CACHING":
             return
-        
-        if (self._LRU_cache_size_KB + self.__row_size_KB(s, emb)) > self.max_cache_size_KB:
-            old_s, old_emb = self._LRU_cache.popitem(last=False)
-            self.__store_in_DB(old_s, old_emb)
-            self.__update_LRU_cache_size(old_s, old_emb, how="DEL")
-
+        item_size = self.__row_size_kb(s, emb)
+        if (self._LRU_cache_size_kb + item_size) > self.max_cache_size_kb:
+            try:
+                old_s, old_emb = self._LRU_cache.popitem(last=False)
+                self.__update_LRU_cache_size(old_s, old_emb, how="DEL")
+                self.__store_in_DB(old_s, old_emb)
+            except KeyError as e:
+                if self._LRU_cache_size_kb == 0.0:
+                    _logger.warning("Item size is bigger than the LRU cache capacity "
+                                    f"{item_size} > {self._LRU_cache_size_kb}. "
+                                    "Consider increasing the cache capacity."
+                                    "If not, expect slower performance due to in-disk cache lookup overhead.")
+                    self.__store_in_DB(old_s, old_emb)
+                else:
+                    raise KeyError(e)
+                return 
         self.__store_in_LRU(s, emb)
         self.__update_LRU_cache_size(s, emb, how="ADD")
         
@@ -428,6 +433,8 @@ class GOEncoder(MultiHotEncoder):
         enc_info = self.encode(collapsed)
 
         df.loc[:, col_name] = pd.Series(list(enc_info["encodings"]), index=df.index, dtype=object)
+        df.loc[:, col_name] = df[col_name].map(lambda x: np.nan if x == () else x)
+
         return df, enc_info["class_labels"]
 
 
@@ -491,6 +498,8 @@ class ECEncoder(MultiHotEncoder):
 
         enc_info = self.encode(collapsed)
         df.loc[:, col_name] = pd.Series(list(enc_info["encodings"]), index=df.index, dtype=object)
+        df.loc[:, col_name] = df[col_name].map(lambda x: np.nan if x == () else x)
+
         return df, enc_info["class_labels"]
 
 
@@ -511,6 +520,7 @@ def encode_multihot(df: pd.DataFrame, col: str, inplace: bool = False) -> Tuple[
     encoder = MultiHotEncoder()
     enc_info = encoder.encode(df[col])
     df.loc[:, col] = pd.Series(list(enc_info["encodings"]), index=df.index, dtype=object)
+    df.loc[:, col] = df[col].map(lambda x: np.nan if x == () else x)
 
     return df, enc_info["class_labels"]
 
