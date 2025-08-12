@@ -2,7 +2,7 @@
 import os
 import sys
 import logging
-from typing import List, Union, Tuple, Dict
+from typing import List, Union, Tuple, Dict, Optional
 import sqlite3
 import atexit
 from collections import OrderedDict
@@ -361,7 +361,7 @@ class FreeTXTEmbedder:
         """
         Embed a list of free-text strings, reusing cached vectors when possible.
 
-        Returns a list aligned with *seqs* of ``np.ndarray`` objects.
+        Returns a list aligned with seqs of ``np.ndarray`` objects.
         Internally obeys OpenAI batch limits and fills the cache on misses.
         """
         _logger.info("Embedding %d text entries (batch_size=%d)", len(seqs), batch_size)
@@ -406,7 +406,7 @@ class MultiHotEncoder:
         Raises
         ------
         ValueError
-            If any element in *sequences* is not a ``tuple``.
+            If any element in sequences is not a ``tuple``.
         """
         _logger.info("MultiHot-encoding %d entries", len(sequences))
         # ----checking-everything-is-tuple-----------------------------------
@@ -433,7 +433,7 @@ class GOEncoder(MultiHotEncoder):
     Encode Gene Ontology annotations at a fixed GO depth.
 
     ``depth`` is absolute; if omitted it is auto-selected so that
-    *coverage_target* fraction of annotations are retained.
+    coverage_target fraction of annotations are retained.
     """
 
     def __init__(self, obo_path: str):
@@ -482,11 +482,11 @@ class GOEncoder(MultiHotEncoder):
         col_name : str
             Column containing tuples of GO term strings.
         depth : int | None
-            Target GO depth. Mutually exclusive with *coverage_target*.
+            Target GO depth. Mutually exclusive with coverage_target.
         coverage_target : float | None
-            Percentile (0-1) of depth distribution to keep if *depth* not given.
+            Percentile (0-1) of depth distribution to keep if depth not given.
         inplace : bool, default False
-            Whether to mutate *df* or return a copy.
+            Whether to mutate df or return a copy.
 
         Returns
         -------
@@ -514,68 +514,100 @@ class GOEncoder(MultiHotEncoder):
 
 class ECEncoder(MultiHotEncoder):
     """
-    Encode Enzyme Commission numbers at a fixed annotation depth.
+    Multi-label encoder for Enzyme-Commission (EC) numbers.
 
-    ``depth`` is absolute; if omitted it is auto-selected so that
-    *coverage_target* fraction of annotations are retained.
+    If `depth` isn't supplied, the class auto-picks a depth (1-4) so that the
+    resulting number of distinct EC classes is as close as possible to
+        N / examples_per_class,
+    where N is the total EC annotations in the column.
     """
-    def __init__(self):
-        super().__init__()
+    # ------------- PRIVATE -------------
+    def _extract_ec_codes(self, ec: str) -> list[str]:
+        """Split an EC string and keep only digit pieces."""
+        return [p for p in ec.split(".") if p.isdigit()]
 
-    # ---------PRIVATE---------
-    def __extract_ec_codes(self, EC: str):
-        present_entries = [i for i in EC.split(".") if i.isdigit()]
-        return present_entries
-    
-    def __depth(self, EC: str):
-        return len(self.__extract_ec_codes(EC))
+    def _all_codes_at_depth(self, series: pd.Series, depth: int) -> set[str]:
+        """Unique EC strings you'd get after collapsing every entry to `depth`."""
+        codes: set[str] = set()
+        for terms in series.dropna():
+            for ec in terms:
+                parts = self._extract_ec_codes(ec)[:depth]
+                if parts:
+                    codes.add(".".join(parts))
+        return codes
 
-    # ---------PROTECTED---------
-    def _auto_depth(self, series: pd.Series, coverage_target: float = 0.8) -> int:
-        depths = [
-            self.__depth(ec)
-            for terms in series.dropna()
-            for ec in terms
-        ]
-        if not depths:
-            raise ValueError("No valid EC numbers found to compute automatic depth.")
-        depth = int(np.percentile(depths, coverage_target * 100))
-        _logger.info("Auto-selected EC depth=%d (coverage_target=%.2f)", depth, coverage_target)
-        return depth
-
-    def _collapse_to_depth_helper(self, EC: str, depth: int):
-        pieces = self.__extract_ec_codes(EC)[:depth]
-        if not pieces:
-            return None
-        return ".".join(pieces)
-        
-    def _collapse_to_depth(self, ECs: Tuple[str], depth: int) -> Tuple[str]:
-        cleaned = filter(None, (self._collapse_to_depth_helper(ec, depth) for ec in ECs))
-        return tuple(sorted(set(cleaned)))
-
-    # ---------PUBLIC---------
-    def encode_ec(self, df: pd.DataFrame, col_name: str, depth: Union[int, None] = None,
-                coverage_target: Union[float, None] = None, inplace=False):
+    def _auto_depth(
+        self,
+        series: pd.Series,
+        examples_per_class: int = 30
+    ) -> int:
         """
-        Collapse EC numbers to a fixed depth then encode as index tuples.
-
-        Parameters mirror `GOEncoder.encode_go`.
+        Pick depth ∈ {4,3,2,1} whose unique-class count is
+        closest to N / examples_per_class.
         """
-        _logger.info("Encoding EC numbers in column '%s' (inplace=%s)", col_name, inplace)
+        N = series.dropna().map(len).sum() # total annotations
+        target_k = max(1, N // examples_per_class) # rough class budget
+
+        best_depth, best_diff = None, float("inf")
+        for d in (4, 3, 2, 1):
+            k = len(self._all_codes_at_depth(series, d))
+            diff = abs(k - target_k)
+            if diff < best_diff:
+                best_depth, best_diff = d, diff
+
+        _logger.info("Auto-selected depth=%d  (classes=%d  target=%d)",
+                     best_depth,
+                     len(self._all_codes_at_depth(series, best_depth)),
+                     target_k)
+        return best_depth
+
+    def _collapse_to_depth_helper(self, ec: str, depth: int) -> Optional[str]:
+        parts = self._extract_ec_codes(ec)[:depth]
+        return ".".join(parts) if parts else None
+
+    def _collapse_to_depth(
+        self,
+        ecs: Tuple[str, ...],
+        depth: int
+    ) -> Tuple[str, ...]:
+        collapsed = filter(
+            None, (self._collapse_to_depth_helper(ec, depth) for ec in ecs)
+        )
+        return tuple(sorted(set(collapsed)))
+
+    # ------------- PUBLIC -------------
+    def encode_ec(
+        self,
+        df: pd.DataFrame,
+        col_name: str,
+        *,
+        depth: Optional[int] = None,
+        examples_per_class: int = 30,
+        inplace: bool = False
+    ) -> Tuple[pd.DataFrame, Dict[str, int]]:
+        """
+        Collapse EC numbers to `depth` (or auto-depth) and multi-hot encode.
+
+        Returns
+        -------
+        encoded_df : pd.DataFrame
+        class_labels : dict[str, int]   # mapping EC-code → column index
+        """
+        _logger.info("Encoding ECs in '%s'  (inplace=%s)", col_name, inplace)
         df = df if inplace else df.copy(deep=True)
+        series = df[col_name]
 
         if depth is None:
-            if coverage_target is None:
-                raise ValueError(
-                    "Either `depth` or `coverage_target` must be provided."
-                )
-            depth = self._auto_depth(df[col_name], coverage_target)
+            depth = self._auto_depth(series, examples_per_class)
 
-        collapsed = df.loc[:, col_name].map(lambda terms: self._collapse_to_depth(terms, depth))
+        collapsed = series.map(
+            lambda terms: self._collapse_to_depth(terms, depth)
+        )
 
         enc_info = self.encode(collapsed)
-        df.loc[:, col_name] = pd.Series(list(enc_info["encodings"]), index=df.index, dtype=object)
-        df.loc[:, col_name] = df[col_name].map(lambda x: np.nan if x == () else x)
+        df[col_name] = pd.Series(
+            list(enc_info["encodings"]), index=df.index, dtype=object
+        ).map(lambda x: np.nan if x == () else x)
 
         return df, enc_info["class_labels"]
 
@@ -584,7 +616,7 @@ def encode_multihot(df: pd.DataFrame, col: str, inplace: bool = False) -> Tuple[
     """
     One-shot convenience wrapper around `MultiHotEncoder`.
 
-    Fits on *df[col]* and overwrites (or copies) that column
+    Fits on df[col] and overwrites (or copies) that column
     with index tuples.
 
     Returns
