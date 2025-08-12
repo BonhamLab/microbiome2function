@@ -1,6 +1,9 @@
 import os
 import pandas as pd
 import M2F
+from dotenv import load_dotenv
+
+load_dotenv("/cluster/home/myehor01/data_processing/microbiome2function/.env")
 
 # ENV & PATHS
 raw_data   = os.getenv("RAW_DATA")
