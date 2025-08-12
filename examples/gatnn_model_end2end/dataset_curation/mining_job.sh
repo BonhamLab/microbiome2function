@@ -15,7 +15,7 @@ module purge
 
 source $HOME/miniconda3/etc/profile.d/conda.sh
 
-conda activate gnn_func_annotation
+conda activate m2f_env
 
 export PYTHONPATH=/cluster/home/myehor01/data_processing/microbiome2function/M2F:$PYTHONPATH
 
