@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH -J data_prep
-#SBATCH --time=02:00:00  #requested time (DD-HH:MM:SS)
-#SBATCH -p gpu
+#SBATCH --time=03:00:00  #requested time (DD-HH:MM:SS)
+#SBATCH -p gpu,preempt
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --cpus-per-task=4
