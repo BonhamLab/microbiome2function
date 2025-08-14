@@ -1,194 +1,183 @@
-# UniProt Data Engineering Pipeline  
+# M2F: Mining to Features
 
-A modular and scalable data engineering toolkit for **protein functional annotation** using UniProtKB data. This package automates:  
+A practical pipeline for mining UniProt, cleaning annotations, and turning biology into machine-learnable features.
 
-- 🔎 **Data mining** from UniProtKB (batched API calls on HPC or locally)  
-- 🧹 **Data cleaning & normalization** (regex-based extraction of domains, GO IDs, EC numbers, etc.)  
-- ⚙️ **Feature engineering** into numeric representations (dense embeddings & multi-hot encodings)  
-- 💾 **Dataset assembly** into graph-ready tensors for ML models (e.g. GNNs)  
+## Overview
 
-This pipeline was built for large-scale **bioinformatics + ML workflows** and is fully HPC-compatible.  
+**Problem**: Functional annotation projects need clean, machine-ready representations of proteins at scale. Raw UniProt text is messy (free-form prose, PubMed debris, lots of metadata), and annotations are heterogeneous (GO terms, EC numbers, functional domains, pathways). Researchers end up reinventing the same brittle scripts over and over.
 
----
+**Solution**: M2F is a modular toolkit that provides a reproducible path from HUMAnN outputs or protein accession IDs to mined UniProt records to a tidy, numeric table (vectors + multi-hot tuples) ready for GNNs or any downstream ML.
 
-## Features  
+## Key Features
 
-- **UniProtKB API batching**  
-  - Retrieve millions of protein records (`process_uniref_batches`)  
-  - Features automatic retries, ID filtering, and per-batch logging  
+- **Scale-friendly mining**: Rate-limited, batched REST calls to UniProtKB
+- **Intelligent cleaning**: Targeted regex extractors for key text fields
+- **Rich feature encoding**:
+  - Dense embeddings for amino acid sequences (ESM-2) and free-text fields (OpenAI)
+  - Structured label encodings for GO terms and EC numbers
+- **Compact persistence**: Single Zarr ZipStore with easy dataset reconstruction
+- **HPC-ready**: Designed for SLURM batch processing
 
-- **Flexible cleaning utilities**  
-  - Regex-based column parsers (`clean_col`, `clean_all_cols`)  
-  - Handles nested data: FT domains, GO terms, Rhea IDs, cofactors, etc.  
+## Installation
 
-- **Embedding + encoding**  
-  - Dense amino acid sequence embeddings: **ProtT5** & **ESM2** via HuggingFace
-  - Free-text functional annotations → OpenAI text embeddings with caching on your machine
-  - GO terms, EC numbers, Rhea IDs → multi-hot vectors (with automatic feature space size control)  
-
-- **HPC-first design**  
-  - Example **SLURM job script** (`job.sh`)  
-  - Timed log rotation and batch-level progress monitoring  
-
----
-
-## Example Usage
-Data Mining:
-```python
-from M2F import (extract_all_accessions_from_dir,
-                fetch_save_uniprotkb_batches,
-                configure_logging)
-import re
-import os
-
-gene_fam_files_dir = os.getenv("SAMPLE_FILES")
-output_dir = os.getenv("SAVE_DATA_TO_DIR")
-job_name = os.getenv("JOB_NAME")
-logs_dir = os.getenv("LOGS_DIR")
-
-assert gene_fam_files_dir, "SAMPLE_FILES env var was not set!"
-assert output_dir, "SAVE_DATA_TO_DIR env var was not set!"
-assert job_name, "JOB_NAME env var was not set!"
-assert logs_dir, "LOGS_DIR env var was not set!"
-
-configure_logging(logs_dir)
-
-accession_nums = extract_all_accessions_from_dir(gene_fam_files_dir, 
-                                             pattern=re.compile(r".*_genefamilies\.tsv$"))
-
-
-out = os.path.join(output_dir, job_name + "_output_dir")
-os.makedirs(out, exist_ok=True)
-
-fetch_save_uniprotkb_batches(
-    uniref_ids=accession_nums,
-    fields=["accession", "ft_domain", "cc_domain",
-            "protein_families", "go_f", "go_p",
-            "cc_function", "cc_catalytic_activity",
-            "ec", "cc_pathway", "rhea", "cc_cofactor", "sequence"],
-    batch_size=40_000,
-    single_api_request_size=100,
-    rps=10,
-    save_to_dir=out,
-)
-
-print(f"Mined data is available at {out}")
+```bash
+pip install m2f  # (once available)
+# or clone and install from source
 ```
-Data Cleaning and Feature engineering:
+
+## Quick Start
+
+### 1. Extract protein accessions from HUMAnN outputs
+
 ```python
-import os
-import pandas as pd
 import M2F
 
-# ENV & PATHS
-raw_data   = os.getenv("RAW_DATA")
-output_dir = os.getenv("SAVE_PROCESSED_TO_DIR")
-logs_dir   = os.getenv("LOGS_DIR")
-job_name   = os.getenv("JOB_NAME")
-db_path    = os.getenv("DB")
-api_key    = os.getenv("OPENAI_API_KEY")
+# Single file
+unirefs, uniclusts = M2F.extract_accessions_from_humann("gene_families.tsv")
 
-assert raw_data,   "RAW_DATA env var was not set!"
-assert output_dir, "SAVE_PROCESSED_TO_DIR env var was not set!"
-assert logs_dir,   "LOGS_DIR env var was not set!"
-assert job_name,   "JOB_NAME env var was not set!"
-assert api_key,    "OPENAI_API_KEY env var was not set!"
-assert db_path,    "DB env var (SQLite cache path) was not set!"
+# Entire directory
+unirefs, uniclusts = M2F.extract_all_accessions_from_dir("/path/to/humann/outputs/")
+```
 
-out = os.path.join(output_dir, job_name + "_output_dir")
-os.makedirs(out, exist_ok=True)
+### 2. Mine UniProtKB data
 
-# LOGGING
-M2F.configure_logging(logs_dir)
+```python
+# Fetch specific fields for your proteins
+df = M2F.fetch_uniprotkb_fields(
+    uniref_ids=unirefs,
+    fields=["accession", "ft_domain", "cc_function", "go_f", "go_p", "sequence"],
+    request_size=100,
+    rps=10  # respect rate limits
+)
+```
 
-# MODEL HANDLES
+### 3. Clean and encode features
+
+```python
+# Set up embedders
+aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t6_8M_UR50D", device="cuda:0")
 txt_embedder = M2F.FreeTXTEmbedder(
-    api_key,
+    api_key="your-openai-key",
     model="LARGE_OPENAI_MODEL",
-    cache_file_path=db_path,
-    caching_mode="APPEND",
+    cache_file_path="embeddings.db"
 )
 
-try:
-    aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t30_150M_UR50D", device="cuda:0")
-except Exception:
-    aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t30_150M_UR50D", device="cpu")
+# Clean raw text
+col_names = ["Domain [FT]", "Function [CC]", "Gene Ontology (molecular function)", "Sequence"]
+apply_norms = {"Function [CC]": True, "Sequence": False, ...}  # normalize free text
+M2F.clean_cols(df, col_names=col_names, apply_norms=apply_norms, inplace=True)
 
-# PIPELINE CONFIG
-col_names=["Domain [FT]",
-        "Domain [CC]",
-        "Gene Ontology (molecular function)",
-        "Gene Ontology (biological process)",
-        "Function [CC]",
-        "Catalytic activity",
-        "EC number",
-        "Pathway",
-        "Cofactor",
-        "Sequence"
-]
+# Generate embeddings
+M2F.embed_AAsequences(df, aa_embedder, inplace=True)
+M2F.embed_ft_domains(df, aa_embedder, inplace=True) 
+M2F.embed_freetxt_cols(df, ["Function [CC]"], txt_embedder, inplace=True)
 
-apply_norms={"Domain [FT]" : False,
-        "Domain [CC]" : True,
-        "Gene Ontology (molecular function)" : False,
-        "Gene Ontology (biological process)" : False,
-        "Function [CC]" : True,
-        "Catalytic activity" : False,
-        "EC number" : False,
-        "Pathway" : True,
-        "Cofactor" : False,
-        "Sequence" : False
+# Encode structured annotations
+df, go_vocab = M2F.encode_go(df, "Gene Ontology (molecular function)", coverage_target=0.8)
+df, ec_vocab = M2F.encode_ec(df, "EC_column", examples_per_class=30)
+```
+
+### 4. Save and load datasets
+
+```python
+# Persist everything in a single compressed file
+metadata = {"go_vocab": go_vocab, "ec_vocab": ec_vocab, "created": "2025-08-14"}
+M2F.save_df(df, "protein_features.zip", metadata=metadata)
+
+# Load later
+df_loaded = M2F.load_df("protein_features.zip")
+print(df_loaded.attrs)  # access metadata
+```
+
+## Data Flow
+
+1. **Accession Mining** → Extract UniRef/UniClust IDs from HUMAnN gene-families files
+2. **UniProtKB Retrieval** → Fetch protein data via batched REST API calls  
+3. **Cleaning** → Remove metadata, extract information with regex, normalize text
+4. **Feature Engineering** → Convert to numerical representations (embeddings + multi-hot encodings)
+5. **Persistence** → Save as compressed, easily-loadable datasets
+
+## Core Components
+
+### Embedders
+- **AAChainEmbedder**: ESM-2 embeddings for amino acid sequences
+- **FreeTXTEmbedder**: OpenAI embeddings for free-text with intelligent caching
+
+### Encoders  
+- **GOEncoder**: Collapse GO terms to fixed depth, encode as integer tuples
+- **ECEncoder**: Handle EC number hierarchies with auto-depth selection
+- **MultiHotEncoder**: Generic multi-label encoding without dense materialization
+
+### Utilities
+- Rate-limited UniProtKB API client
+- Regex-based text cleaning with PubMed reference removal
+- Zarr-based persistence for heterogeneous data types
+- HPC batch processing support
+
+## Advanced Usage
+
+### Custom Text Extraction
+Add new regex patterns to `AVAILABLE_EXTRACTION_PATTERNS` in `cleaning_utils.py`:
+
+```python
+# Your custom pattern will be automatically applied during cleaning
+AVAILABLE_EXTRACTION_PATTERNS["new_field"] = r"your_regex_here"
+```
+
+### Different Sequence Models
+```python
+# Swap in different Hugging Face models
+custom_embedder = M2F.AAChainEmbedder(
+    model_key="esm2_t30_150M_UR50D",  # larger model
+    device="cuda:1",
+    representation_layer="last"
+)
+```
+
+### Batch Processing for HPC
+```python
+# Process large datasets in chunks, save intermediate results
+output_dir = M2F.fetch_save_uniprotkb_batches(
+    uniref_ids=large_id_list,
+    fields=fields,
+    batch_size=10000,  # IDs per file
+    save_to_dir="/scratch/protein_batches/"
+)
+```
+
+## Requirements
+
+- Python 3.11+
+- pandas, numpy
+- torch (for ESM-2 embeddings)
+- openai (for text embeddings)  
+- zarr (for data persistence)
+- requests (for UniProt API)
+
+## Contributing
+
+M2F is designed to be easily extensible:
+
+- **New ontologies**: Subclass `MultiHotEncoder` with your collapse/encoding logic
+- **Different embeddings**: Clone existing embedder classes and swap models
+- **Custom serialization**: Follow the `save_df`/`load_df` pattern for new data types
+
+## License
+
+[Add your license here]
+
+## Citation
+
+```bibtex
+@misc{mishchyriak2025m2f,
+  author = {Yehor Mishchyriak},
+  title = {M2F: A practical pipeline for mining UniProt and turning biology into machine-learnable features},
+  year = {2025},
+  note = {Summer Research Intern, Bonham Lab, Tufts University School of Medicine}
 }
-
-txt_embedder = M2F.FreeTXTEmbedder(os.getenv("OPENAI_API_KEY"), model="LARGE_OPENAI_MODEL",
-                                   cache_file_path=os.getenv("DB"), caching_mode="APPEND")
-aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t30_150M_UR50D", device="cuda:0")
-
-
-def process_df_inplace(df: pd.DataFrame, *, col_names: list, apply_norms: dict) -> dict:
-	# clean
-	M2F.clean_cols(df, col_names=col_names, apply_norms=apply_norms, inplace=True)
-	# encode
-	M2F.embed_ft_domains(df, aa_embedder, inplace=True)
-	M2F.embed_AAsequences(df, aa_embedder, inplace=True)
-	M2F.embed_freetxt_cols(df, ["Domain [CC]", "Function [CC]", "Catalytic activity", "Pathway"], txt_embedder, inplace=True)
-	_, gomf_meta = M2F.encode_go(df, "Gene Ontology (molecular function)", coverage_target=0.8, inplace=True)
-	_, gobp_meta = M2F.encode_go(df, "Gene Ontology (biological process)", coverage_target=0.8, inplace=True)
-	_, ec_meta = M2F.encode_ec(df, "EC number", inplace=True)
-	_, cofactor_meta = M2F.encode_multihot(df, "Cofactor", inplace=True)
-
-	return {"gomf_meta": gomf_meta, "gobp_meta": gobp_meta, "ec_meta": ec_meta, "cofactor_meta": cofactor_meta}
-
-
-for file in M2F.util.files_from(raw_data):
-	# load
-	df = pd.read_csv(file)
-	# process
-	meta = process_df_inplace(df, col_names=col_names, apply_norms=apply_norms)
-	# save
-	out_pth = out + os.path.basename(file).replace(".csv", ".zip")
-	M2F.save_df(df, out_pth, metadata=meta)
-
-print(f"Processed data is available at {out}")
 ```
 
-## Repository Structure
-```graphql
-dataset_curation/
-├── scripts/
-│   ├── mining_utils.py           # API batching & data retrieval
-│   ├── cleaning_utils.py         # regex-based text cleaning
-│   ├── feature_engineering_utils.py # embeddings & multi-hot encodings
-│   ├── embedding_utils.py        # ProtT5, ESM2, OpenAI embedder
-│   └── logging_utils.py          # logging setup (HPC-friendly)
-├── for_hpc_use/
-│   └── data_mining.py            # entrypoint for HPC jobs (example; alter in the way that fits your case)
-├── job.sh                        # SLURM job script (example; alter in the way that fits your case)
-├── notebooks/
-    └── data_processing.ipynb     # notebook example of data preparation (end-to-end)
-```
+## Contact
 
-## Why This Matters
-This pipeline solves the biggest pain point in protein functional annotation projects:
-* Automates the entire data engineering lifecycle
-* Scales from hundreds to millions of proteins
-* Produces fully numeric datasets ready for deep learning (esp. Graph Neural Networks)
+- **Author**: Yehor Mishchyriak (ymishchyriak@wesleyan.edu)
+- **Affiliations**: Bonham Lab (Tufts University School of Medicine), Wesleyan University
