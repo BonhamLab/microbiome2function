@@ -1,14 +1,18 @@
 #!/bin/bash -l
 #SBATCH -J data_prep
 #SBATCH --time=3-00:00:00  #requested time (DD-HH:MM:SS)
-#SBATCH -p batch
+#SBATCH -p gpu
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH --mem=48g  #requesting 48GB of RAM total
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=20g  #requesting 20GB of RAM total
+#SBATCH --gres=gpu:a100:1
 #SBATCH --output=data_prep.%j.%N.out  #saving standard output to file, %j=JOBID, %N=NodeName
 #SBATCH --error=data_prep.%j.%N.err   #saving standard error to file, %j=JOBID, %N=NodeName
 #SBATCH --mail-type=ALL    #email options
 #SBATCH --mail-user=ymishchyriak@wesleyan.edu
+
+nvidia-smi || { echo "No GPU visible to this job"; exit 1; }
 
 # have a clean start. purge all loaded modules in current environment
 module purge
