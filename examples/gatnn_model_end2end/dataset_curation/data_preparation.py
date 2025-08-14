@@ -2,6 +2,9 @@ import os
 import pandas as pd
 import M2F
 from dotenv import load_dotenv
+import logging
+
+logger = logging.getLogger(__name__)
 
 load_dotenv("/cluster/home/myehor01/data_processing/microbiome2function/.env")
 
@@ -49,15 +52,17 @@ apply_norms={"Domain [FT]" : False,
 }
 
 try:
-    aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t30_150M_UR50D", device="cuda:0")
+    aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t6_8M_UR50D", device="cuda:0")
+    logger.info("AAChainEmbedder will use a CUDA device")
 except Exception:
-    aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t30_150M_UR50D", device="cpu")
+    logger.info("AAChainEmbedder will use a CPU")
+    aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t6_8M_UR50D", device="cpu")
 
 txt_embedder = M2F.FreeTXTEmbedder(api_key,
                                 model="LARGE_OPENAI_MODEL",
                                 cache_file_path=db_path,
                                 caching_mode="CREATE/OVERRIDE",
-                                max_cache_size_kb=200_000)
+                                max_cache_size_kb=20_000)
 
 # total number of rows to process is: 859,660
 def process_df_inplace(df: pd.DataFrame, *, col_names: list, apply_norms: dict) -> dict:

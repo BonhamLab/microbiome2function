@@ -4,7 +4,7 @@
 #SBATCH -p batch
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH --mem=8g  #requesting 8GB of RAM total
+#SBATCH --mem=48g  #requesting 48GB of RAM total
 #SBATCH --output=data_prep.%j.%N.out  #saving standard output to file, %j=JOBID, %N=NodeName
 #SBATCH --error=data_prep.%j.%N.err   #saving standard error to file, %j=JOBID, %N=NodeName
 #SBATCH --mail-type=ALL    #email options
