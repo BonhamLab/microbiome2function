@@ -1,5 +1,3 @@
-# M2F — Microbiome to Function
-
 ![LOGO](https://raw.githubusercontent.com/Yehor-Mishchyriak/microbiome2function/main/assets/M2F_banner.png)
 
 **A practical pipeline for mining UniProt, cleaning annotations, and turning biology into machine-learnable features**
