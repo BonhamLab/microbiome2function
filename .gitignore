@@ -7,6 +7,15 @@
 !M2F/dependencies/
 !M2F/dependencies/*
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+!model/
+!model/*.py
+!model/*.ipynb
+!model/synthetic_data/
+!model/synthetic_data/raw/
+!model/synthetic_data/raw/*.csv
+!model/synthetic_data/processed/
+!model/synthetic_data/processed/*.pt
+# -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 !examples/
 !examples/gatnn_model_end2end/
 !examples/gatnn_model_end2end/*.py
