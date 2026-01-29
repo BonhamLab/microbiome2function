@@ -2,37 +2,26 @@
 *
 
 # BUT
+!assets/
+!assets/*
+# ---
+!data_mining/
+!data_mining/*.py
+!data_mining/*.ipynb
+!data_mining/*.sh
+# ---
+!docs/
+!docs/*.pdf
+# ---
 !M2F/
 !M2F/*.py
 !M2F/dependencies/
 !M2F/dependencies/*
-# -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-!model/
-!model/*.py
-!model/*.ipynb
-!model/synthetic_data/
-!model/synthetic_data/raw/
-!model/synthetic_data/raw/*.csv
-!model/synthetic_data/processed/
-!model/synthetic_data/processed/*.pt
-# -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-!examples/
-!examples/gatnn_model_end2end/
-!examples/gatnn_model_end2end/*.py
-!examples/gatnn_model_end2end/*.ipynb
-!examples/gatnn_model_end2end/dataset_curation/
-!examples/gatnn_model_end2end/dataset_curation/*.py
-!examples/gatnn_model_end2end/dataset_curation/*.sh
-!examples/gatnn_model_end2end/dataset_curation/*.ipynb
-!examples/
-!examples/*.py
-!examples/*.ipynb
-!assets/
-!assets/*.png
-# -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-!.gitignore
-!README.MD
-!requirements.txt
-!docs.md
-!M2F_API_reference.pdf
-!M2F.pdf
+# ---
+!models/
+!models/PROT*/
+!models/PROT*/*.py
+!models/PROT*/*.ipynb
+# ---
+
+# ---
