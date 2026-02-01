@@ -23,7 +23,8 @@ __all__ = [
     "GOEncoder",
     "FreeTXTEmbedder",
     "AAChainEmbedder",
-    "ECEncoder"
+    "ECEncoder",
+    "get_GODag",
     # feature engineering utils
     "embed_ft_domains",
     "embed_AAsequences",
