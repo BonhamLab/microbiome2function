@@ -646,7 +646,8 @@ __all__ = [
     "GOEncoder",
     "FreeTXTEmbedder",
     "AAChainEmbedder",
-    "ECEncoder"
+    "ECEncoder",
+    "get_GODag"
 ]
 
 if __name__ == "__main__":
