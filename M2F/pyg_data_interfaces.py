@@ -210,8 +210,17 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
             self.data, self.slices = torch.load(processed_path, weights_only=False)
 
     @property
+    def raw_node_ids_to_accessions(self):
+        return {
+            int(row.i) : str(row.uniref).replace("UniRef90_", "", 1)
+            for row in self.dataset_input.accession_ids.itertuples(index=False)
+            if not str(row.uniref).startswith(("UniRef90_UNK", "UniRef90_UPI"))
+        }
+
+    @property
     def raw_file_names(self) -> list[str]:
         return [
+            "features.csv",
             self.dataset_input.path_to_accession_ids_csv_file.name,
             *[path.name for path in self.dataset_input.edge_csv_paths],
         ]
@@ -220,23 +229,42 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
     def processed_file_names(self) -> str:
         return "data.pt"
 
+    @staticmethod
+    def _materialize(src: Path, dst: Path) -> None:
+        if dst.exists():
+            return
+        try:
+            dst.symlink_to(src.resolve())
+        except OSError:
+            shutil.copy2(src, dst)
+
     def download(self) -> None:
-        """
-        TODO:
-        - Optionally copy/symlink raw files into `self.raw_dir`.
-        - Optionally trigger remote download when files are missing.
-        """
-        pass
+        raw_dir = Path(self.raw_dir)
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        fetched_features = fetch_uniprotkb_fields(
+                    uniref_ids=list(self.raw_node_ids_to_accessions.values()),
+                    fields=list(self.dataset_input.uniprot_features),
+                    request_size=self.dataset_input.request_size,
+                    rps=self.dataset_input.rps,
+                    max_retry=self.dataset_input.max_retry
+                )
+        fetched_features.to_csv(raw_dir / "features.csv", index=False)
+
+        # put index + edge files into raw/ so raw_file_names is satisfied
+        self._materialize(
+            self.dataset_input.path_to_accession_ids_csv_file,
+            raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name,
+        )
+        for edge_path in self.dataset_input.edge_csv_paths:
+            self._materialize(edge_path, raw_dir / edge_path.name)
 
     def process(self) -> None:
-        """
-        TODO:
-        - Parse accession index and chunk edge files.
-        - Build Data(x, edge_index, edge_attr, y, ...).
-        - Apply pre_filter/pre_transform as needed.
-        - Save via `torch.save(self.collate([data]), self.processed_paths[0])`.
-        """
-        raise NotImplementedError("Implement `process()` in ProteinGraphInMemoryDataset")
+        # pre_filter
+        # pre_transform
+        # build X
+        # build Y
+        # build edge_index
+        # build edge_attr
 
 
 class ProteinGraphOnDiskDataset(OnDiskDataset):
