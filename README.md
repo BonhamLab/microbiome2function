@@ -3,9 +3,10 @@
 **A practical pipeline for mining UniProt, cleaning annotations, and turning biology into machine-learnable features**
 
 **Author:**  
-Yehor Mishchyriak  
-*Summer Research Intern, Bonham Lab, Tufts University School of Medicine (June–July 2025).  
-Undergraduate Student, Wesleyan University (2022–2026)*
+Yehor Mishchyriak
+*Student Research Intern, Bonham Lab, Tufts University School of Medicine (November 2025 - Present)*
+*Summer Research Intern, Bonham Lab, Tufts University School of Medicine (June–July 2025)*
+*Undergraduate Student, Wesleyan University (2022–2026)*
 
 **Affiliations:**  
 Bonham Lab, Tufts University School of Medicine  
@@ -17,21 +18,47 @@ ymishchyriak@wesleyan.edu
 ---
 
 ## Contents
-1. Overview  
-2. Typical Data Flow  
-3. API Reference  
+1. Setup & Layout
+2. Overview  
+3. Typical Data Flow  
+4. API Reference  
    - logging  
    - data mining  
    - data cleaning  
    - numerical data encoding  
    - data persistence  
    - miscellaneous  
-4. Extending M2F  
-5. Examples  
+5. PyG Data Interfaces (WIP)
+6. Extending M2F  
+7. Examples  
 
 ---
 
-# 1. Overview
+# 1. Setup & Layout
+
+M2F now lives under a `src/` layout:
+
+- package source: `src/M2F`
+- active notebooks: `model_notebooks/`
+- legacy examples: `legacy_code_examples/`
+
+To use `import M2F` locally from the repository root, add `src` to `PYTHONPATH`:
+
+```bash
+export PYTHONPATH="$PWD/src"
+```
+
+Then install dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+---
+
+# 2. Overview
 
 **Problem.** Functional annotation projects need clean, machine-ready protein representations at scale.  
 Raw UniProt text is messy — free-form prose, PubMed artifacts, heterogeneous annotations (GO, EC, domains, pathways). Most labs reinvent brittle scripts repeatedly.
@@ -49,7 +76,7 @@ Raw UniProt text is messy — free-form prose, PubMed artifacts, heterogeneous a
 
 ---
 
-# 2. Typical Data Flow
+# 3. Typical Data Flow
 
 ### 1. Accession mining  
 HUMAnN gene-families TSV files are passed to:
@@ -88,7 +115,7 @@ to store/load the ML-ready dataset in a single ZipStore.
 
 ---
 
-# 3. API Reference
+# 4. API Reference
 
 ## Logging
 
@@ -204,12 +231,20 @@ Collapses GO IDs to a chosen depth or auto-selects depth via coverage statistics
 (depth = percentile of observed depths). Unknown GO IDs are skipped. Empty tuples
 become NaN in the returned DataFrame.
 
+Methods include:
+- `encode_go(df, col_name, depth=None, coverage_target=None, inplace=False)`
+- `cut_to_depth(df, col_name, depth, inplace=False, empty_to_nan=True)`
+
 ---
 
 ## `ECEncoder()`
 Collapses EC numbers (depth 1–4) or auto-selects optimal depth based on target density.
 Auto-depth searches {4,3,2,1} for a class count closest to
 `N/examples_per_class` (where `N` is total annotations). Empty tuples become NaN.
+
+Methods include:
+- `encode_ec(df, col_name, depth=None, examples_per_class=30, inplace=False)`
+- `cut_to_depth(df, col_name, depth, inplace=False, empty_to_nan=True)`
 
 ---
 
@@ -291,7 +326,24 @@ Decorator for temporarily disabling warnings.
 
 ---
 
-# 4. Extending M2F
+# 5. PyG Data Interfaces (WIP)
+
+There is an in-progress module at:
+
+- `src/M2F/pyg_data_interfaces.py`
+
+It currently provides:
+- `DatasetInput` (validated raw input contract)
+- `ProteinGraphInMemoryDataset` (download path partially implemented)
+- `ProteinGraphOnDiskDataset` (skeleton)
+
+Important:
+- this module is **not** exported from `M2F/__init__.py`
+- `process()` logic is still incomplete
+
+---
+
+# 6. Extending M2F
 
 - **New free-text column?**  
   Add regex to `AVAILABLE_EXTRACTION_PATTERNS`, run through `clean_cols`, then embed via `embed_freetxt_cols`.
@@ -307,7 +359,7 @@ Decorator for temporarily disabling warnings.
 
 ---
 
-# 5. Examples
+# 7. Examples
 
 ## Data Mining
 
@@ -335,6 +387,7 @@ df.to_csv("my_uniprot_data.csv")
 ```python
 import M2F
 import pandas as pd
+import os
 
 col_names = [
     "Domain [FT]",
