@@ -30,7 +30,7 @@ ymishchyriak@wesleyan.edu
    - numerical data encoding  
    - data persistence  
    - miscellaneous  
-5. PyG Data Interfaces (WIP)
+5. PyG InMemory Dataset Interface
 6. Extending M2F  
 7. Examples  
 
@@ -328,20 +328,28 @@ Decorator for temporarily disabling warnings.
 
 ---
 
-# 5. PyG Data Interfaces (WIP)
+# 5. PyG InMemory Dataset Interface
 
-There is an in-progress module at:
+The graph data interface lives at:
 
 - `src/M2F/pyg_data_interfaces.py`
 
 It currently provides:
-- `DatasetInput` (validated raw input contract)
-- `ProteinGraphInMemoryDataset` (download path partially implemented)
-- `ProteinGraphOnDiskDataset` (skeleton)
+- `DatasetInput`: validated input contract for raw graph files + UniProt query config
+- `ProteinGraphInMemoryDataset`: complete end-to-end PyG in-memory dataset pipeline
+
+`ProteinGraphOnDiskDataset` has been removed from the codebase.
 
 Important:
 - this module is **not** exported from `M2F/__init__.py`
-- `process()` logic is still incomplete
+- import directly: `from M2F.pyg_data_interfaces import DatasetInput, ProteinGraphInMemoryDataset`
+
+`ProteinGraphInMemoryDataset` pipeline:
+1. `download()` queries UniProt for requested fields and writes `raw/features.csv`, then materializes index/edge files into `raw/`.
+2. `process()` aligns index rows with features by accession, applies dataset-level `pre_transform`, applies dataset-level `pre_filter`, drops rows missing required `X`/`Y`, and reindexes node ids.
+3. Builds `x`, `y`, `edge_index`, and flexible-dimensional `edge_attr`, then stores one `Data` object in `processed/data.pt`.
+
+Raw edge chunks must contain a destination column (default `j`); all other columns can be used as edge attributes.
 
 ---
 
