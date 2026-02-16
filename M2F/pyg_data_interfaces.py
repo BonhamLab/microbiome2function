@@ -8,9 +8,11 @@ from dataclasses import dataclass, field
 from typing import Iterator, Any
 from pathlib import Path
 import re
+import shutil
 
 # local
 from . import util
+from .mining_utils import fetch_uniprotkb_fields
 
 
 @dataclass
@@ -27,6 +29,9 @@ class DatasetInput:
     path_to_accession_ids_csv_file: Path
     path_to_edge_csv_dir: Path
     uniprot_features: list[str] | tuple[str, ...]
+    request_size: int = 25
+    rps: float = 1
+    max_retry: int | float = 20
     edge_csv_file_name_pattern: re.Pattern[str] = field(
         default_factory=lambda: re.compile(r"chunk_\d+\.csv")
     )
@@ -41,9 +46,22 @@ class DatasetInput:
         self.validate()
 
     def validate(self) -> None:
+        self._validate_uniprot_request_params()
         self._validate_uniprot_features()
         self._validate_accession_ids_csv_file()
         self._validate_edge_csv_files()
+
+    def _validate_uniprot_request_params(self) -> None:
+        if self.request_size < 1:
+            raise ValueError("`request_size` must be >= 1")
+        if self.rps <= 0:
+            raise ValueError("`rps` must be > 0")
+        if self.max_retry < 0:
+            raise ValueError("`max_retry` must be >= 0")
+
+        self._validation_ctx["request_size"] = self.request_size
+        self._validation_ctx["rps"] = self.rps
+        self._validation_ctx["max_retry"] = self.max_retry
 
     def _normalize_uniprot_features(self) -> None:
         if not isinstance(self.uniprot_features, (list, tuple)):
