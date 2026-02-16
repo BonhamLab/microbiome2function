@@ -177,7 +177,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         pre_transform=None,
         pre_filter=None,
         log: bool = True,
-        force_reload: bool = False,
+        force_reload: bool = False
     ) -> None:
         self.dataset_input = dataset_input
         self.dataset_input.validate()
@@ -239,7 +239,7 @@ class ProteinGraphOnDiskDataset(OnDiskDataset):
         pre_filter=None,
         backend: str = "sqlite",
         schema: object = object,
-        log: bool = True,
+        log: bool = True
     ) -> None:
         self.dataset_input = dataset_input
         self.dataset_input.validate()
