@@ -199,6 +199,9 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
     ) -> None:
         self.dataset_input = dataset_input
         self.dataset_input.validate()
+        self.node_transform=node_transform,
+        self.node_pre_transform=node_pre_transform,
+        self.node_pre_filter=node_pre_filter,
         super().__init__(
             root=str(root),
             log=log,
@@ -241,14 +244,16 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
     def download(self) -> None:
         raw_dir = Path(self.raw_dir)
         raw_dir.mkdir(parents=True, exist_ok=True)
-        fetched_features = fetch_uniprotkb_fields(
-                    uniref_ids=list(self.raw_node_ids_to_accessions.values()),
-                    fields=list(self.dataset_input.uniprot_features),
-                    request_size=self.dataset_input.request_size,
-                    rps=self.dataset_input.rps,
-                    max_retry=self.dataset_input.max_retry
-                )
-        fetched_features.to_csv(raw_dir / "features.csv", index=False)
+        features_path = raw_dir / "features.csv"
+        if not features_path.exists():
+            fetched_features = fetch_uniprotkb_fields(
+                        uniref_ids=list(self.raw_node_ids_to_accessions.values()),
+                        fields=list(self.dataset_input.uniprot_features),
+                        request_size=self.dataset_input.request_size,
+                        rps=self.dataset_input.rps,
+                        max_retry=self.dataset_input.max_retry
+                    )
+            fetched_features.to_csv(features_path, index=False)
 
         # put index + edge files into raw/ so raw_file_names is satisfied
         self._materialize(
