@@ -14,7 +14,7 @@ from . import util
 
 
 @dataclass
-class DataSetInput:
+class DatasetInput:
     """
     Input contract consumed by PyG dataset interfaces (InMemory / OnDisk).
 
@@ -124,7 +124,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
     def __init__(
         self,
         root: str | Path,
-        dataset_input: DataSetInput,
+        dataset_input: DatasetInput,
         transform=None,
         pre_transform=None,
         pre_filter=None,
@@ -186,7 +186,7 @@ class ProteinGraphOnDiskDataset(OnDiskDataset):
     def __init__(
         self,
         root: str | Path,
-        dataset_input: DataSetInput,
+        dataset_input: DatasetInput,
         transform=None,
         pre_filter=None,
         backend: str = "sqlite",
