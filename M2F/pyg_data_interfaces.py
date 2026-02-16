@@ -21,10 +21,12 @@ class DatasetInput:
     Expected raw format:
     - accession index CSV: columns ['uniref', 'i'] (1-based node ids)
     - edge chunk CSVs: file names like chunk_<i>.csv, columns ['j', 'v']
+    - uniprot_features: list/tuple of UniProt return field names (e.g. 'sequence', 'go_f')
     """
 
     path_to_accession_ids_csv_file: Path
     path_to_edge_csv_dir: Path
+    uniprot_features: list[str] | tuple[str, ...]
     edge_csv_file_name_pattern: re.Pattern[str] = field(
         default_factory=lambda: re.compile(r"chunk_\d+\.csv")
     )
@@ -33,11 +35,53 @@ class DatasetInput:
     _accession_ids_df: pd.DataFrame | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self.path_to_accession_ids_csv_file = Path(self.path_to_accession_ids_csv_file)
+        self.path_to_edge_csv_dir = Path(self.path_to_edge_csv_dir)
+        self._normalize_uniprot_features()
         self.validate()
 
     def validate(self) -> None:
+        self._validate_uniprot_features()
         self._validate_accession_ids_csv_file()
         self._validate_edge_csv_files()
+
+    def _normalize_uniprot_features(self) -> None:
+        if not isinstance(self.uniprot_features, (list, tuple)):
+            raise TypeError(
+                "`uniprot_features` must be list[str] or tuple[str, ...]"
+            )
+
+        normalized: list[str] = []
+        for feature in self.uniprot_features:
+            if not isinstance(feature, str):
+                raise TypeError(
+                    f"All entries in `uniprot_features` must be strings, got {type(feature)}"
+                )
+            cleaned = feature.strip()
+            if cleaned:
+                normalized.append(cleaned)
+
+        # deduplicate while preserving order
+        normalized = list(dict.fromkeys(normalized))
+
+        # ensure accession is always requested for stable joins/alignment
+        if "accession" not in normalized:
+            normalized.insert(0, "accession")
+
+        self.uniprot_features = tuple(normalized)
+
+    def _validate_uniprot_features(self) -> None:
+        if len(self.uniprot_features) == 0:
+            raise ValueError("`uniprot_features` cannot be empty")
+
+        if any(not feature for feature in self.uniprot_features):
+            raise ValueError("`uniprot_features` cannot contain empty strings")
+
+        if "accession" not in self.uniprot_features:
+            raise ValueError("`uniprot_features` must include 'accession'")
+
+        self._validation_ctx["uniprot_features"] = self.uniprot_features
+        self._validation_ctx["num_uniprot_features"] = len(self.uniprot_features)
 
     def _validate_accession_ids_csv_file(self) -> None:
         if not self.path_to_accession_ids_csv_file.exists():
@@ -112,6 +156,10 @@ class DatasetInput:
         if "min_node_id" not in self._validation_ctx or "max_node_id" not in self._validation_ctx:
             self._validate_accession_ids_csv_file()
         return self._validation_ctx["min_node_id"], self._validation_ctx["max_node_id"]
+
+    @property
+    def uniprot_query_fields(self) -> tuple[str, ...]:
+        return tuple(self.uniprot_features)
 
 
 class ProteinGraphInMemoryDataset(InMemoryDataset):
