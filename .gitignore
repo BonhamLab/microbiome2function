@@ -1,27 +1,39 @@
-# ignore all
+# Ignore everything by default; selectively include tracked project files.
 *
 
-# BUT
+# Repo-level files
+!.gitignore
+!README.md
+!requirements.txt
+!docs.md
+
+# Static assets
 !assets/
 !assets/*
-# ---
-!data_mining/
-!data_mining/*.py
-!data_mining/*.ipynb
-!data_mining/*.sh
-# ---
-!docs/
-!docs/*.pdf
-# ---
-!M2F/
-!M2F/*.py
-!M2F/dependencies/
-!M2F/dependencies/*
-# ---
-!models/
-!models/PROT*/
-!models/PROT*/*.py
-!models/PROT*/*.ipynb
-# ---
 
-# ---
+# Source package (new layout)
+!src/
+!src/M2F/
+!src/M2F/*.py
+!src/M2F/dependencies/
+!src/M2F/dependencies/*
+
+# Active model notebooks/code (new layout)
+!model_notebooks/
+!model_notebooks/PROT*/
+!model_notebooks/PROT*/*.py
+!model_notebooks/PROT*/*.ipynb
+
+# Code examples (if present)
+!code_examples/
+!code_examples/data_mining/
+!code_examples/data_mining/*.py
+!code_examples/data_mining/*.ipynb
+!code_examples/data_mining/*.sh
+
+# Legacy examples
+!legacy_code_examples/
+!legacy_code_examples/data_mining/
+!legacy_code_examples/data_mining/*.py
+!legacy_code_examples/data_mining/*.ipynb
+!legacy_code_examples/data_mining/*.sh

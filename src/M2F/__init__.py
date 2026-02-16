@@ -3,13 +3,14 @@ from .mining_utils import *
 from .cleaning_utils import *
 from .feature_engineering_utils import *
 from .embedding_utils import *
+from .embedding_utils import get_GODag
 from .logging_utils import configure_logging
 from . import util
 
 
 __all__ = [
     # logging
-    "configure_logging"
+    "configure_logging",
     # mining utils
     "extract_accessions_from_humann",
     "extract_all_accessions_from_dir",
@@ -34,7 +35,7 @@ __all__ = [
     "encode_multihot",
     "empty_tuples_to_NaNs",
     "save_df",
-    "load_df"
+    "load_df",
     # util
-    "util"
+    "util",
 ]

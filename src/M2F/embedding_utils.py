@@ -102,34 +102,44 @@ class AAChainEmbedder:
             raise ValueError(f"`model_key` must be one of {list(self.HF_MODELS)}")
 
         self.repo_id = self.HF_MODELS[model_key]
+        self.device = device
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.repo_id, use_fast=False)
         
         # suppressing the “Some weights …” warning
+        load_kwargs = {"torch_dtype": dtype}
+        if device.startswith("cuda"):
+            load_kwargs["device_map"] = "auto"
         with silent_transformers():
-            self.model = AutoModel.from_pretrained(
-                self.repo_id,
-                torch_dtype=dtype,
-                device_map="auto" if device.startswith("cuda") else None
-            )
+            self.model = AutoModel.from_pretrained(self.repo_id, **load_kwargs)
 
-        if device.startswith("cuda"):                    
-            self.model.to(torch.device(device))          
-        else:
+        # If HF dispatched layers with device_map='auto', do not force `.to(...)`.
+        if not (device.startswith("cuda") and hasattr(self.model, "hf_device_map")):
             self.model.to(device)
         self.model.eval()
 
+        # `hidden_states` includes one extra slot at index 0 for embedding outputs:
+        # transformer layers map to indices [1..n_layers].
         n_layers = self.model.config.num_hidden_layers
-        self.repr_idx = (
-            n_layers - 1 if representation_layer == "last" else
-            n_layers - 2 if representation_layer == "second_to_last" else
-            int(representation_layer)
+        if representation_layer == "last":
+            self.repr_idx = n_layers
+        elif representation_layer == "second_to_last":
+            self.repr_idx = n_layers - 1
+        else:
+            layer_idx = int(representation_layer)
+            if not (0 <= layer_idx < n_layers):
+                raise ValueError(f"representation_layer must be in [0,{n_layers-1}] or a valid alias")
+            self.repr_idx = layer_idx + 1
+
+        if not (1 <= self.repr_idx <= n_layers):
+            raise ValueError(
+                f"Internal hidden state index must be in [1,{n_layers}], got {self.repr_idx}"
+            )
+        _logger.debug(
+            "AAChainEmbedder initialised: repr_idx=%d (hidden_states), max_len=%d",
+            self.repr_idx,
+            self.model.config.max_position_embeddings,
         )
-        if not (0 <= self.repr_idx < n_layers):
-            raise ValueError(f"representation_layer must be in [0,{n_layers-1}] or a valid alias")
-        
-        _logger.debug("AAChainEmbedder initialised: repr_idx=%d, max_len=%d", self.repr_idx,
-                      self.model.config.max_position_embeddings)
 
     # ------------------------------------------------------------
     @torch.no_grad()
@@ -193,10 +203,15 @@ class AAChainEmbedder:
             spec_mask = spec_mask.bool()
             keep_mask = attn_mask & (~spec_mask) # attn_mask AND NOT(spec_mask)
 
-            # pool
-            for i in range(hidden_states.size(0)):
-                emb = hidden_states[i][keep_mask[i]].mean(0)
-                out.append(emb.to(dtype=torch.float32, device="cpu").numpy())
+            # Stable masked mean pooling:
+            # - avoids NaNs when a row has 0 kept tokens by clamping denom at 1
+            keep_mask_f = keep_mask.unsqueeze(-1).type_as(hidden_states)  # [B, L, 1]
+            summed = (hidden_states * keep_mask_f).sum(dim=1)             # [B, D]
+            counts = keep_mask.sum(dim=1).clamp(min=1).unsqueeze(-1)      # [B, 1]
+            pooled = summed / counts
+
+            pooled = pooled.to(dtype=torch.float32, device="cpu").numpy()
+            out.extend([row for row in pooled])
         
         _logger.info("Finished embedding; produced %d vectors", len(out))
         return out
@@ -448,13 +463,34 @@ class GOEncoder(MultiHotEncoder):
             raise FileNotFoundError(f"OBO not found: {obo_path}")
         _logger.info("Loading GO DAG from %s", obo_path)
         self.godag = GODag(obo_path)
+
+    @staticmethod
+    def _as_term_tuple(terms) -> Tuple[str, ...]:
+        """Normalize input GO terms to a tuple of strings."""
+        if terms is None:
+            return ()
+        if isinstance(terms, tuple):
+            return tuple(t for t in terms if isinstance(t, str) and t)
+        if isinstance(terms, list):
+            return tuple(t for t in terms if isinstance(t, str) and t)
+        if isinstance(terms, set):
+            # keep deterministic order for reproducibility
+            return tuple(sorted(t for t in terms if isinstance(t, str) and t))
+        if isinstance(terms, str):
+            return (terms,) if terms else ()
+        if pd.isna(terms):
+            return ()
+        raise TypeError(f"Unsupported GO term container: {type(terms)}")
     
     # ---------PROTECTED---------
     def _auto_depth(self, series: pd.Series, coverage_target: float = 0.8) -> int:
+        if not (0 <= coverage_target <= 1):
+            raise ValueError(f"coverage_target must be in [0, 1], got {coverage_target}")
+
         depths = [
             self.godag[gid].depth
             for terms in series.dropna()
-            for gid in terms
+            for gid in self._as_term_tuple(terms)
             if gid in self.godag
         ]
         if not depths:
@@ -463,7 +499,11 @@ class GOEncoder(MultiHotEncoder):
         _logger.info("Auto-selected GO depth=%d (coverage_target=%.2f)", depth, coverage_target)
         return depth
 
-    def _collapse_to_depth(self, go_ids: Tuple[str], k: int) -> Tuple[str]:
+    def _collapse_to_depth(self, go_ids, k: int) -> Tuple[str]:
+        if k < 0:
+            raise ValueError(f"GO depth must be >= 0, got {k}")
+
+        go_ids = self._as_term_tuple(go_ids)
         kept = set()
         for gid in go_ids:
             if gid not in self.godag:
@@ -475,6 +515,25 @@ class GOEncoder(MultiHotEncoder):
         return tuple(sorted(kept))
 
     # ---------PUBLIC---------
+    def cut_to_depth(
+        self,
+        df: pd.DataFrame,
+        col_name: str,
+        depth: int,
+        *,
+        inplace: bool = False,
+        empty_to_nan: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Collapse GO terms in `col_name` to a specified GO depth without encoding.
+        """
+        _logger.info("Collapsing GO terms in '%s' to depth=%d (inplace=%s)", col_name, depth, inplace)
+        df = df if inplace else df.copy(deep=True)
+        df.loc[:, col_name] = df[col_name].map(lambda terms: self._collapse_to_depth(terms, depth))
+        if empty_to_nan:
+            df.loc[:, col_name] = df[col_name].map(lambda x: np.nan if x == () else x)
+        return df
+
     def encode_go(
         self, df: pd.DataFrame, col_name: str, depth: Union[None, int] = None,
         coverage_target: Union[float, None] = None, inplace: bool = False):
@@ -509,8 +568,8 @@ class GOEncoder(MultiHotEncoder):
                 )
             depth = self._auto_depth(df[col_name], coverage_target)
 
-        collapsed = df.loc[:, col_name].map(lambda terms: self._collapse_to_depth(terms, depth))
-        enc_info = self.encode(collapsed)
+        df = self.cut_to_depth(df, col_name, depth, inplace=True, empty_to_nan=False)
+        enc_info = self.encode(df[col_name])
 
         df.loc[:, col_name] = pd.Series(list(enc_info["encodings"]), index=df.index, dtype=object)
         df.loc[:, col_name] = df[col_name].map(lambda x: np.nan if x == () else x)
@@ -527,6 +586,23 @@ class ECEncoder(MultiHotEncoder):
         N / examples_per_class,
     where N is the total EC annotations in the column.
     """
+    @staticmethod
+    def _as_term_tuple(terms) -> Tuple[str, ...]:
+        """Normalize input EC terms to a tuple of strings."""
+        if terms is None:
+            return ()
+        if isinstance(terms, tuple):
+            return tuple(t for t in terms if isinstance(t, str) and t)
+        if isinstance(terms, list):
+            return tuple(t for t in terms if isinstance(t, str) and t)
+        if isinstance(terms, set):
+            return tuple(sorted(t for t in terms if isinstance(t, str) and t))
+        if isinstance(terms, str):
+            return (terms,) if terms else ()
+        if pd.isna(terms):
+            return ()
+        raise TypeError(f"Unsupported EC term container: {type(terms)}")
+
     # ------------- PRIVATE -------------
     def _extract_ec_codes(self, ec: str) -> list[str]:
         """Split an EC string and keep only digit pieces."""
@@ -536,7 +612,7 @@ class ECEncoder(MultiHotEncoder):
         """Unique EC strings you'd get after collapsing every entry to `depth`."""
         codes: set[str] = set()
         for terms in series.dropna():
-            for ec in terms:
+            for ec in self._as_term_tuple(terms):
                 parts = self._extract_ec_codes(ec)[:depth]
                 if parts:
                     codes.add(".".join(parts))
@@ -573,15 +649,38 @@ class ECEncoder(MultiHotEncoder):
 
     def _collapse_to_depth(
         self,
-        ecs: Tuple[str, ...],
+        ecs,
         depth: int
     ) -> Tuple[str, ...]:
+        if not (1 <= depth <= 4):
+            raise ValueError(f"EC depth must be in [1, 4], got {depth}")
+
+        ecs = self._as_term_tuple(ecs)
         collapsed = filter(
             None, (self._collapse_to_depth_helper(ec, depth) for ec in ecs)
         )
         return tuple(sorted(set(collapsed)))
 
     # ------------- PUBLIC -------------
+    def cut_to_depth(
+        self,
+        df: pd.DataFrame,
+        col_name: str,
+        *,
+        depth: int,
+        inplace: bool = False,
+        empty_to_nan: bool = True
+    ) -> pd.DataFrame:
+        """
+        Collapse EC terms in `col_name` to a specified depth without encoding.
+        """
+        _logger.info("Collapsing EC terms in '%s' to depth=%d (inplace=%s)", col_name, depth, inplace)
+        df = df if inplace else df.copy(deep=True)
+        df.loc[:, col_name] = df[col_name].map(lambda terms: self._collapse_to_depth(terms, depth))
+        if empty_to_nan:
+            df.loc[:, col_name] = df[col_name].map(lambda x: np.nan if x == () else x)
+        return df
+
     def encode_ec(
         self,
         df: pd.DataFrame,
@@ -606,11 +705,8 @@ class ECEncoder(MultiHotEncoder):
         if depth is None:
             depth = self._auto_depth(series, examples_per_class)
 
-        collapsed = series.map(
-            lambda terms: self._collapse_to_depth(terms, depth)
-        )
-
-        enc_info = self.encode(collapsed)
+        df = self.cut_to_depth(df, col_name, depth=depth, inplace=True, empty_to_nan=False)
+        enc_info = self.encode(df[col_name])
         df[col_name] = pd.Series(
             list(enc_info["encodings"]), index=df.index, dtype=object
         ).map(lambda x: np.nan if x == () else x)
