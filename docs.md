@@ -1,23 +1,21 @@
 # M2F Documentation
 
-This document describes the **M2F package** in this repository (`M2F/`) based on the current code.
+This document describes the current `src/M2F` codebase.
 
 ## Scope
 
 M2F provides:
 - logging setup
-- UniProt/HUMAnN mining utilities
-- regex-based cleaning
-- embedding and multi-hot encoders
-- feature engineering helpers
-- compact dataframe persistence (`.zip` Zarr stores)
-
-It also contains an experimental PyG interfaces module:
-- `M2F/pyg_data_interfaces.py`
+- HUMAnN/UniProt mining helpers
+- regex-based annotation cleaning
+- sequence/text embedding utilities
+- GO/EC and generic multi-hot encoders
+- dataframe persistence (`save_df` / `load_df`)
+- a PyG in-memory dataset interface for graph training
 
 ## Public API (`import M2F`)
 
-`M2F/__init__.py` exports:
+Exported from `src/M2F/__init__.py`:
 
 ### Logging
 - `configure_logging`
@@ -32,7 +30,7 @@ It also contains an experimental PyG interfaces module:
 - `clean_col`
 - `clean_cols`
 
-### Embedding / Encoders
+### Embedding / Encoding
 - `AAChainEmbedder`
 - `FreeTXTEmbedder`
 - `MultiHotEncoder`
@@ -52,234 +50,121 @@ It also contains an experimental PyG interfaces module:
 - `load_df`
 
 ### Utilities
-- `util` module
+- `util`
 
----
+## Module Notes
 
-## 1. Logging
+### Mining (`src/M2F/mining_utils.py`)
 
-### `configure_logging(logs_dir, file_level=logging.DEBUG, console_level=logging.WARNING)`
+`fetch_uniprotkb_fields(...)` performs rate-limited batched UniProt calls, retries HTTP failures with smaller batches, and returns one concatenated DataFrame.
 
-Configures the root logger with:
-- timed rotating file handler (daily, keep 7)
-- console handler
+### Cleaning (`src/M2F/cleaning_utils.py`)
 
-If handlers already exist on root, it returns immediately.
+`clean_col` / `clean_cols` extract structured values with column-specific regexes, optionally normalize text, and convert cell payloads to tuples.
 
----
+### Embedding (`src/M2F/embedding_utils.py`)
 
-## 2. Mining Utilities
+- `AAChainEmbedder`: mean-pooled ESM2 embeddings.
+- `FreeTXTEmbedder`: OpenAI embeddings with optional RAM+SQLite caching.
+- `GOEncoder` / `ECEncoder`: depth-cut + label encoding.
 
-### `extract_accessions_from_humann(file_path, out_type=list)`
+Current depth behavior:
+- GO/EC terms that do **not** reach requested depth are dropped.
+- Rows that become empty are represented as `NaN` in `encode_go` / `encode_ec` outputs.
 
-Reads a HUMAnN gene-families TSV (`READS_UNMAPPED` column), extracts:
-- UniRef90 accessions
-- UniClust90 accessions
+### Feature engineering (`src/M2F/feature_engineering_utils.py`)
 
-Filters out UniRef accessions starting with `UNK` / `UPI`.
+Provides wrappers and higher-level transforms:
+- `embed_AAsequences`
+- `embed_ft_domains`
+- `embed_freetxt_cols`
+- `encode_go` (bound GO encoder)
+- `encode_ec` (bound EC encoder)
 
-Returns `(unirefs, uniclusts)` converted to `out_type`.
+### Persistence (`src/M2F/feature_engineering_utils.py`)
 
-### `extract_all_accessions_from_dir(dir_path, pattern=None, out_type=list)`
+- `save_df` writes heterogeneous payloads to a `.zip` Zarr store.
+- `load_df` reconstructs the DataFrame.
 
-Iterates files from `dir_path` (optional regex filter), calls `extract_accessions_from_humann`, unions results, returns both collections as `out_type`.
+## PyG InMemory Graph Interface
 
-### `fetch_uniprotkb_fields(uniref_ids, fields, request_size=100, rps=10, max_retry=inf)`
+File: `src/M2F/pyg_data_interfaces.py`
 
-Rate-limited batched UniProtKB TSV fetch.
-- retries HTTP failures recursively with smaller batch size
-- returns concatenated DataFrame (or empty DataFrame with requested columns)
-
-### `fetch_save_uniprotkb_batches(uniref_ids, fields, batch_size, single_api_request_size=100, rps=10, save_to_dir=None)`
-
-Large-scale wrapper over `fetch_uniprotkb_fields`.
-- splits ID list into coarse batches
-- saves each batch to parquet (CSV fallback)
-- returns output directory path
-
----
-
-## 3. Cleaning Utilities
-
-### `clean_col(df, col_name, apply_norm=True, apply_strip_pubmed=True, inplace=True)`
-
-Column cleaning pipeline:
-- remove PubMed snippets (optional)
-- regex extraction by column name (when pattern exists)
-- normalization (optional)
-- dedupe
-- output tuples (NaN -> `()`)
-
-### `clean_cols(df, col_names, apply_norms=None, apply_strip_pubmeds=None, inplace=False)`
-
-Multi-column wrapper around `clean_col` with per-column toggles.
-
----
-
-## 4. Embedding / Encoding
-
-### 4.1 `AAChainEmbedder`
-
-Mean-pooled ESM2 sequence embeddings.
-
-Constructor:
-- `model_key` one of bundled ESM2 checkpoints
-- `device` (cpu/cuda)
-- `dtype`
-- `representation_layer` (`"last"`, `"second_to_last"`, or integer)
-
-Method:
-- `embed_sequences(seqs, batch_size=32) -> list[np.ndarray]`
-
-Notes:
-- masks out special/padding tokens before pooling
-- returns CPU `float32` numpy vectors
-- truncates overlong sequences with warning
-
-### 4.2 `FreeTXTEmbedder`
-
-OpenAI embedding wrapper with optional caches:
-- RAM LRU
-- SQLite disk cache
-
-Method:
-- `embed_sequences(seqs, batch_size=1000) -> list[np.ndarray]`
-
-### 4.3 `MultiHotEncoder`
-
-- `encode(sequences: pd.Series)` expects tuple labels per row
-- outputs:
-  - `encodings`: tuple[int, ...] per row
-  - `class_labels`: label -> class index map
-
-### 4.4 `GOEncoder`
-
-- `encode_go(df, col_name, depth=None, coverage_target=None, inplace=False)`
-- `cut_to_depth(df, col_name, depth, inplace=False, empty_to_nan=True)`
-
-Behavior:
-- collapses GO IDs to a specified depth
-- supports auto-depth via `coverage_target`
-- then multi-hot encodes
-
-### 4.5 `ECEncoder`
-
-- `encode_ec(df, col_name, depth=None, examples_per_class=30, inplace=False)`
-- `cut_to_depth(df, col_name, depth, inplace=False, empty_to_nan=True)`
-
-Behavior:
-- collapses EC levels to requested depth (1..4)
-- supports auto-depth via class-budget heuristic
-- then multi-hot encodes
-
-### 4.6 `encode_multihot(df, col, inplace=False)`
-
-One-shot multihot wrapper using `MultiHotEncoder`.
-
----
-
-## 5. Feature Engineering and Persistence
-
-### Embedding helpers
-
-- `embed_freetxt_cols(df, cols, embedder, batch_size=1000, inplace=False)`
-  - embeds tuple-of-strings free-text columns
-  - row output = max-pooled embedding
-
-- `embed_ft_domains(df, embedder, batch_size=128, inplace=False)`
-  - extracts domain subsequences from:
-    - `Domain [FT]` (ranges)
-    - `Sequence`
-  - embeds and max-pools
-
-- `embed_AAsequences(df, embedder, batch_size=128, inplace=False)`
-  - embeds full protein sequence from `Sequence`
-
-### GO/EC wrappers
-
-In `feature_engineering_utils.py`:
-- `encode_go` is a bound alias of `GOEncoder.encode_go`
-- `encode_ec` is a bound alias of `ECEncoder.encode_ec`
-
-### Persistence
-
-- `save_df(df, pth, metadata=None)`
-  - writes a `.zip` Zarr store
-  - expects `Entry` column for accession keys
-  - supports tuple and ndarray column payloads
-
-- `load_df(path)`
-  - reconstructs dataframe from saved ZipStore
-
-- `empty_tuples_to_NaNs(df, inplace=False)`
-
----
-
-## 6. Utility Module (`M2F.util`)
-
-- `files_from(dir_path, pattern=None)`
-- `compose(*funcs)`
-- `suppress_warnings(*warning_types)`
-
----
-
-## 7. Experimental PyG Interfaces (WIP)
-
-File: `M2F/pyg_data_interfaces.py`
-
-Contains:
-- `DatasetInput`
-- `ProteinGraphInMemoryDataset`
-- `ProteinGraphOnDiskDataset`
-
-Current status:
-- `DatasetInput` validation is implemented
-- `download()` for `ProteinGraphInMemoryDataset` is partially implemented
-- `process()` for `ProteinGraphInMemoryDataset` is still a stub (`pass`)
-- `ProteinGraphOnDiskDataset` is mostly scaffold/stub
-
-Important:
-- This module is **not** exported in `M2F/__init__.py`
-- API here should be treated as in-progress
-
----
-
-## 8. Minimal Usage Pattern
+This module is **not** exported from `M2F.__init__`; import directly.
 
 ```python
-import M2F
-
-M2F.configure_logging("./logs")
-
-# 1) Mine accessions
-unirefs, uniclusts = M2F.extract_accessions_from_humann("sample_genefamilies.tsv")
-
-# 2) Fetch UniProt fields
-df = M2F.fetch_uniprotkb_fields(
-    uniref_ids=unirefs,
-    fields=["accession", "sequence", "go_f", "ec"],
-    request_size=100,
-    rps=10,
-)
-
-# 3) Clean
-# (use column names returned by UniProt TSV response)
-# df = M2F.clean_cols(...)
-
-# 4) Encode
-# df, go_map = M2F.encode_go(df, "Gene Ontology (molecular function)", depth=6)
-# df, ec_map = M2F.encode_ec(df, "EC number", depth=3)
-
-# 5) Persist
-M2F.save_df(df, "processed_dataset.zip")
-restored = M2F.load_df("processed_dataset.zip")
+from M2F.pyg_data_interfaces import DatasetInput, ProteinGraphInMemoryDataset
 ```
 
----
+### `DatasetInput`
 
-## 9. Known Data Assumptions
+Validated contract with:
+- accession index CSV (`uniref`, `i`)
+- edge chunk directory (`chunk_<id>.csv` style by default)
+- requested UniProt fields (`uniprot_features`)
+- supervised fields (`X`, `Y`)
+- UniProt request parameters (`request_size`, `rps`, `max_retry`)
+- flexible edge schema:
+  - destination column (`edge_dst_column`, default `j`)
+  - optional fixed edge attribute columns (`edge_attr_columns`)
 
-- many encoders/embedders expect tuple-like cleaned columns
-- `save_df`/`load_df` expect an `Entry` accession column
-- `embed_ft_domains` expects both `Domain [FT]` and `Sequence`
-- GO/EC encoders operate on GO/EC string collections per row
+### `ProteinGraphInMemoryDataset`
+
+Current lifecycle:
+1. `download()`
+   - queries UniProt and stores `raw/features.csv`
+   - materializes index + edge chunks into `raw/`
+2. `process()`
+   - reads `features.csv` and index file
+   - normalizes UniProt accession alias (`Entry` -> `accession`)
+   - aligns graph nodes to features by accession
+   - applies dataset-level `pre_transform(node_df) -> DataFrame`
+   - applies dataset-level `pre_filter(node_df) -> boolean mask`
+   - removes rows missing required `X`/`Y`
+   - reindexes nodes after filtering
+   - builds `x`, `y`, `edge_index`, `edge_attr`
+   - supports variable-dimensional `edge_attr`
+   - writes single processed graph to `processed/data.pt`
+
+Stored metadata on `Data` includes:
+- `node_id_to_accession`
+- `x_fields`
+- `y_field`
+- `edge_attr_fields`
+
+### On-disk interface status
+
+`ProteinGraphOnDiskDataset` has been removed from the codebase.
+
+## Minimal PyG Usage
+
+```python
+from pathlib import Path
+from M2F.pyg_data_interfaces import DatasetInput, ProteinGraphInMemoryDataset
+
+inp = DatasetInput(
+    path_to_accession_ids_csv_file=Path("untracked/test_data_subset/uniref_index_count.csv"),
+    path_to_edge_csv_dir=Path("untracked/test_data_subset"),
+    uniprot_features=("accession", "sequence", "go_f"),
+    X=("sequence",),
+    Y="go_f",
+    edge_dst_column="j",
+)
+
+ds = ProteinGraphInMemoryDataset(
+    root=Path("untracked/prot_graph_root"),
+    dataset_input=inp,
+    pre_transform=my_dataframe_transform,
+    pre_filter=my_dataframe_filter,
+    force_reload=True,
+)
+
+data = ds[0]
+```
+
+## Current Structure
+
+- package: `src/M2F`
+- active notebooks: `model_notebooks`
+- scratch outputs: `untracked`
+- legacy scripts/examples: `legacy_code_examples`
