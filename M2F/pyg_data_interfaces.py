@@ -191,9 +191,9 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         self,
         root: str | Path,
         dataset_input: DatasetInput,
-        transform=None,
-        pre_transform=None,
-        pre_filter=None,
+        node_transform=None,
+        node_pre_transform=None,
+        node_pre_filter=None,
         log: bool = True,
         force_reload: bool = False
     ) -> None:
@@ -201,9 +201,6 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         self.dataset_input.validate()
         super().__init__(
             root=str(root),
-            transform=transform,
-            pre_transform=pre_transform,
-            pre_filter=pre_filter,
             log=log,
             force_reload=force_reload,
         )
