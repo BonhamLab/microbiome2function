@@ -5,7 +5,9 @@
 **Author:**  
 Yehor Mishchyriak
 *Student Research Intern, Bonham Lab, Tufts University School of Medicine (November 2025 - Present)*
+
 *Summer Research Intern, Bonham Lab, Tufts University School of Medicine (June–July 2025)*
+
 *Undergraduate Student, Wesleyan University (2022–2026)*
 
 **Affiliations:**  
