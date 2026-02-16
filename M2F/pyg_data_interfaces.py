@@ -270,6 +270,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # build Y
         # build edge_index
         # build edge_attr
+        pass
 
 
 class ProteinGraphOnDiskDataset(OnDiskDataset):
