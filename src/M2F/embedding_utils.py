@@ -455,6 +455,10 @@ class GOEncoder(MultiHotEncoder):
 
     ``depth`` is absolute; if omitted it is auto-selected so that
     coverage_target fraction of annotations are retained.
+
+    Terms that do not have an ancestor at the requested depth are dropped.
+    If an entry loses all terms after collapsing, it is represented as NaN
+    by `cut_to_depth(..., empty_to_nan=True)` and by `encode_go(...)`.
     """
 
     def __init__(self, obo_path: str):
@@ -511,7 +515,9 @@ class GOEncoder(MultiHotEncoder):
             node = self.godag[gid]
             ancestors = {gid}.union(node.get_all_parents())
             at_k = {n for n in ancestors if self.godag[n].depth == k}
-            kept.update(at_k if at_k else {min(ancestors, key=lambda x: self.godag[x].depth)})
+            # Strict behavior: if requested depth is unavailable for this term,
+            # drop the term instead of falling back to a shallower ancestor.
+            kept.update(at_k)
         return tuple(sorted(kept))
 
     # ---------PUBLIC---------
@@ -585,6 +591,10 @@ class ECEncoder(MultiHotEncoder):
     resulting number of distinct EC classes is as close as possible to
         N / examples_per_class,
     where N is the total EC annotations in the column.
+
+    Terms that cannot be represented at the requested depth are dropped.
+    If an entry loses all terms after collapsing, it is represented as NaN
+    by `cut_to_depth(..., empty_to_nan=True)` and by `encode_ec(...)`.
     """
     @staticmethod
     def _as_term_tuple(terms) -> Tuple[str, ...]:
@@ -613,8 +623,9 @@ class ECEncoder(MultiHotEncoder):
         codes: set[str] = set()
         for terms in series.dropna():
             for ec in self._as_term_tuple(terms):
-                parts = self._extract_ec_codes(ec)[:depth]
-                if parts:
+                parts = self._extract_ec_codes(ec)
+                if len(parts) >= depth:
+                    parts = parts[:depth]
                     codes.add(".".join(parts))
         return codes
 
@@ -644,8 +655,10 @@ class ECEncoder(MultiHotEncoder):
         return best_depth
 
     def _collapse_to_depth_helper(self, ec: str, depth: int) -> Optional[str]:
-        parts = self._extract_ec_codes(ec)[:depth]
-        return ".".join(parts) if parts else None
+        parts = self._extract_ec_codes(ec)
+        if len(parts) < depth:
+            return None
+        return ".".join(parts[:depth])
 
     def _collapse_to_depth(
         self,
