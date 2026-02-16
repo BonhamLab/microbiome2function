@@ -102,34 +102,44 @@ class AAChainEmbedder:
             raise ValueError(f"`model_key` must be one of {list(self.HF_MODELS)}")
 
         self.repo_id = self.HF_MODELS[model_key]
+        self.device = device
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.repo_id, use_fast=False)
         
         # suppressing the “Some weights …” warning
+        load_kwargs = {"torch_dtype": dtype}
+        if device.startswith("cuda"):
+            load_kwargs["device_map"] = "auto"
         with silent_transformers():
-            self.model = AutoModel.from_pretrained(
-                self.repo_id,
-                torch_dtype=dtype,
-                device_map="auto" if device.startswith("cuda") else None
-            )
+            self.model = AutoModel.from_pretrained(self.repo_id, **load_kwargs)
 
-        if device.startswith("cuda"):                    
-            self.model.to(torch.device(device))          
-        else:
+        # If HF dispatched layers with device_map='auto', do not force `.to(...)`.
+        if not (device.startswith("cuda") and hasattr(self.model, "hf_device_map")):
             self.model.to(device)
         self.model.eval()
 
+        # `hidden_states` includes one extra slot at index 0 for embedding outputs:
+        # transformer layers map to indices [1..n_layers].
         n_layers = self.model.config.num_hidden_layers
-        self.repr_idx = (
-            n_layers - 1 if representation_layer == "last" else
-            n_layers - 2 if representation_layer == "second_to_last" else
-            int(representation_layer)
+        if representation_layer == "last":
+            self.repr_idx = n_layers
+        elif representation_layer == "second_to_last":
+            self.repr_idx = n_layers - 1
+        else:
+            layer_idx = int(representation_layer)
+            if not (0 <= layer_idx < n_layers):
+                raise ValueError(f"representation_layer must be in [0,{n_layers-1}] or a valid alias")
+            self.repr_idx = layer_idx + 1
+
+        if not (1 <= self.repr_idx <= n_layers):
+            raise ValueError(
+                f"Internal hidden state index must be in [1,{n_layers}], got {self.repr_idx}"
+            )
+        _logger.debug(
+            "AAChainEmbedder initialised: repr_idx=%d (hidden_states), max_len=%d",
+            self.repr_idx,
+            self.model.config.max_position_embeddings,
         )
-        if not (0 <= self.repr_idx < n_layers):
-            raise ValueError(f"representation_layer must be in [0,{n_layers-1}] or a valid alias")
-        
-        _logger.debug("AAChainEmbedder initialised: repr_idx=%d, max_len=%d", self.repr_idx,
-                      self.model.config.max_position_embeddings)
 
     # ------------------------------------------------------------
     @torch.no_grad()
@@ -193,10 +203,15 @@ class AAChainEmbedder:
             spec_mask = spec_mask.bool()
             keep_mask = attn_mask & (~spec_mask) # attn_mask AND NOT(spec_mask)
 
-            # pool
-            for i in range(hidden_states.size(0)):
-                emb = hidden_states[i][keep_mask[i]].mean(0)
-                out.append(emb.to(dtype=torch.float32, device="cpu").numpy())
+            # Stable masked mean pooling:
+            # - avoids NaNs when a row has 0 kept tokens by clamping denom at 1
+            keep_mask_f = keep_mask.unsqueeze(-1).type_as(hidden_states)  # [B, L, 1]
+            summed = (hidden_states * keep_mask_f).sum(dim=1)             # [B, D]
+            counts = keep_mask.sum(dim=1).clamp(min=1).unsqueeze(-1)      # [B, 1]
+            pooled = summed / counts
+
+            pooled = pooled.to(dtype=torch.float32, device="cpu").numpy()
+            out.extend([row for row in pooled])
         
         _logger.info("Finished embedding; produced %d vectors", len(out))
         return out
