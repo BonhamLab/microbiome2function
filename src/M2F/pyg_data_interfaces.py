@@ -24,11 +24,15 @@ class DatasetInput:
     - accession index CSV: columns ['uniref', 'i'] (1-based node ids)
     - edge chunk CSVs: file names like chunk_<i>.csv, columns ['j', 'v']
     - uniprot_features: list/tuple of UniProt return field names (e.g. 'sequence', 'go_f')
+    - X: feature field names used as model inputs
+    - Y: target field name used as model output
     """
 
     path_to_accession_ids_csv_file: Path
     path_to_edge_csv_dir: Path
     uniprot_features: list[str] | tuple[str, ...]
+    X: list[str] | tuple[str, ...]
+    Y: str
     request_size: int = 25
     rps: float = 1
     max_retry: int | float = 20
@@ -42,14 +46,49 @@ class DatasetInput:
     def __post_init__(self) -> None:
         self.path_to_accession_ids_csv_file = Path(self.path_to_accession_ids_csv_file)
         self.path_to_edge_csv_dir = Path(self.path_to_edge_csv_dir)
+        self._normalize_xy()
         self._normalize_uniprot_features()
         self.validate()
 
     def validate(self) -> None:
         self._validate_uniprot_request_params()
+        self._validate_xy()
         self._validate_uniprot_features()
         self._validate_accession_ids_csv_file()
         self._validate_edge_csv_files()
+
+    @staticmethod
+    def _normalize_field_names(fields: list[str] | tuple[str, ...], *, arg_name: str) -> tuple[str, ...]:
+        if not isinstance(fields, (list, tuple)):
+            raise TypeError(f"`{arg_name}` must be list[str] or tuple[str, ...]")
+        out: list[str] = []
+        for field_name in fields:
+            if not isinstance(field_name, str):
+                raise TypeError(
+                    f"All entries in `{arg_name}` must be strings, got {type(field_name)}"
+                )
+            cleaned = field_name.strip()
+            if cleaned:
+                out.append(cleaned)
+        return tuple(dict.fromkeys(out))  # dedupe while preserving order
+
+    def _normalize_xy(self) -> None:
+        self.X = self._normalize_field_names(self.X, arg_name="X")
+        if not isinstance(self.Y, str):
+            raise TypeError(f"`Y` must be str, got {type(self.Y)}")
+        self.Y = self.Y.strip()
+
+    def _validate_xy(self) -> None:
+        if len(self.X) == 0:
+            raise ValueError("`X` cannot be empty")
+        if not self.Y:
+            raise ValueError("`Y` cannot be empty")
+        if self.Y == "accession":
+            raise ValueError("`Y` cannot be 'accession'")
+
+        self._validation_ctx["X"] = self.X
+        self._validation_ctx["Y"] = self.Y
+        self._validation_ctx["num_X_fields"] = len(self.X)
 
     def _validate_uniprot_request_params(self) -> None:
         if self.request_size < 1:
@@ -64,23 +103,16 @@ class DatasetInput:
         self._validation_ctx["max_retry"] = self.max_retry
 
     def _normalize_uniprot_features(self) -> None:
-        if not isinstance(self.uniprot_features, (list, tuple)):
-            raise TypeError(
-                "`uniprot_features` must be list[str] or tuple[str, ...]"
-            )
-
-        normalized: list[str] = []
-        for feature in self.uniprot_features:
-            if not isinstance(feature, str):
-                raise TypeError(
-                    f"All entries in `uniprot_features` must be strings, got {type(feature)}"
-                )
-            cleaned = feature.strip()
-            if cleaned:
-                normalized.append(cleaned)
+        normalized = list(
+            self._normalize_field_names(self.uniprot_features, arg_name="uniprot_features")
+        )
 
         # deduplicate while preserving order
         normalized = list(dict.fromkeys(normalized))
+
+        # ensure all required supervised fields are requested from UniProt
+        normalized.extend(self.X)
+        normalized.append(self.Y)
 
         # ensure accession is always requested for stable joins/alignment
         if "accession" not in normalized:
@@ -97,6 +129,14 @@ class DatasetInput:
 
         if "accession" not in self.uniprot_features:
             raise ValueError("`uniprot_features` must include 'accession'")
+
+        missing_for_x = [field_name for field_name in self.X if field_name not in self.uniprot_features]
+        if missing_for_x:
+            raise ValueError(
+                f"`X` fields missing from `uniprot_features`: {missing_for_x}"
+            )
+        if self.Y not in self.uniprot_features:
+            raise ValueError(f"`Y` field '{self.Y}' missing from `uniprot_features`")
 
         self._validation_ctx["uniprot_features"] = self.uniprot_features
         self._validation_ctx["num_uniprot_features"] = len(self.uniprot_features)
