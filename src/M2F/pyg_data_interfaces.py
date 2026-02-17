@@ -29,6 +29,8 @@ class DatasetInput:
     - edge chunk CSVs: file names like chunk_<i>.csv, must contain a destination id
       column (default: 'j'); all other columns can be used as edge attributes.
     - uniprot_features: list/tuple of UniProt return field names (e.g. 'sequence', 'go_f')
+    - uniprot_feature_column_map: optional map from UniProt query key -> returned CSV column name
+      (e.g., {'accession': 'Entry', 'sequence': 'Sequence'})
     - X: feature field names used as model inputs
     - Y: target field name used as model output
     """
@@ -38,6 +40,7 @@ class DatasetInput:
     uniprot_features: list[str] | tuple[str, ...]
     X: list[str] | tuple[str, ...]
     Y: str
+    uniprot_feature_column_map: dict[str, str] | None = None
     request_size: int = 25
     rps: float = 1
     max_retry: int | float = 20
@@ -55,6 +58,7 @@ class DatasetInput:
         self.path_to_edge_csv_dir = Path(self.path_to_edge_csv_dir)
         self._normalize_edge_schema()
         self._normalize_xy()
+        self._normalize_uniprot_feature_column_map()
         self._normalize_uniprot_features()
         self.validate()
 
@@ -62,6 +66,7 @@ class DatasetInput:
         self._validate_uniprot_request_params()
         self._validate_xy()
         self._validate_uniprot_features()
+        self._validate_uniprot_feature_column_map()
         self._validate_accession_ids_csv_file()
         self._validate_edge_csv_files()
 
@@ -145,6 +150,53 @@ class DatasetInput:
             normalized.insert(0, "accession")
 
         self.uniprot_features = tuple(normalized)
+
+    def _normalize_uniprot_feature_column_map(self) -> None:
+        if self.uniprot_feature_column_map is None:
+            self.uniprot_feature_column_map = {}
+            return
+        if not isinstance(self.uniprot_feature_column_map, dict):
+            raise TypeError(
+                "`uniprot_feature_column_map` must be dict[str, str] | None"
+            )
+
+        normalized: dict[str, str] = {}
+        for key, value in self.uniprot_feature_column_map.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError(
+                    "`uniprot_feature_column_map` must only contain string keys and values"
+                )
+            k = key.strip()
+            v = value.strip()
+            if not k or not v:
+                raise ValueError(
+                    "`uniprot_feature_column_map` cannot contain empty keys/values"
+                )
+            normalized[k] = v
+        self.uniprot_feature_column_map = normalized
+
+    def _validate_uniprot_feature_column_map(self) -> None:
+        assert self.uniprot_feature_column_map is not None
+        invalid_keys = [
+            key for key in self.uniprot_feature_column_map
+            if key not in self.uniprot_features
+        ]
+        if invalid_keys:
+            raise ValueError(
+                "Keys in `uniprot_feature_column_map` must be present in "
+                f"`uniprot_features`. Invalid keys: {invalid_keys}"
+            )
+
+        values = list(self.uniprot_feature_column_map.values())
+        if len(values) != len(set(values)):
+            raise ValueError(
+                "Values in `uniprot_feature_column_map` must be unique to avoid "
+                "column rename collisions."
+            )
+
+        self._validation_ctx["uniprot_feature_column_map"] = dict(
+            self.uniprot_feature_column_map
+        )
 
     def _validate_uniprot_features(self) -> None:
         if len(self.uniprot_features) == 0:
@@ -371,6 +423,18 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ------------------------ read the data -------------------------
         index_df = pd.read_csv(index_path)
         features_df = pd.read_csv(features_path)
+
+        # Normalize returned UniProt columns to query keys via DatasetInput map.
+        # Example: {'accession': 'Entry', 'sequence': 'Sequence'}.
+        rename_map: dict[str, str] = {}
+        for query_key, returned_col in self.dataset_input.uniprot_feature_column_map.items():
+            if query_key in features_df.columns:
+                continue
+            if returned_col in features_df.columns:
+                rename_map[returned_col] = query_key
+        if rename_map:
+            features_df = features_df.rename(columns=rename_map)
+
         # UniProt TSV exports accession as 'Entry'; normalize to our merge key.
         if "accession" not in features_df.columns and "Entry" in features_df.columns:
             features_df = features_df.rename(columns={"Entry": "accession"})
