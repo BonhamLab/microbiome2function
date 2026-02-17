@@ -41,6 +41,7 @@ class DatasetInput:
     X: list[str] | tuple[str, ...]
     Y: str
     uniprot_feature_column_map: dict[str, str] | None = None
+
     request_size: int = 25
     rps: float = 1
     max_retry: int | float = 20
@@ -278,6 +279,14 @@ class DatasetInput:
                 raise ValueError(
                     f"Column '{self.edge_dst_column}' must be integer dtype in {path}"
                 )
+
+        # Enforce one edge chunk file per node row in the index CSV.
+        expected_num_edge_files = int(self.accession_ids.shape[0])
+        if len(files) != expected_num_edge_files:
+            raise ValueError(
+                "Number of edge CSV files does not match accession index row count: "
+                f"{len(files)} files vs {expected_num_edge_files} index rows."
+            )
 
         self._validation_ctx["num_edge_files"] = len(files)
 
