@@ -2,7 +2,7 @@
 import pandas as pd
 import torch
 import numpy as np
-from torch_geometric.data import InMemoryDataset, OnDiskDataset, Data
+from torch_geometric.data import InMemoryDataset, Data
 
 # built-in
 from dataclasses import dataclass, field
