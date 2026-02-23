@@ -273,7 +273,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         if not features_path.exists():
             fetched_features = fetch_uniprotkb_fields(
                         uniref_ids=self.original_node_accessions,
-                        fields=list(self.dataset_input.uniprot_features),
+                        fields=[self.dataset_input.Y_query_field_name, *self.dataset_input.X_query_field_names],
                         request_size=self.dataset_input.request_size,
                         rps=self.dataset_input.rps,
                         max_retry=self.dataset_input.max_retry
@@ -327,38 +327,18 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ------------------------ read the data -------------------------
         index_df = pd.read_csv(index_path)
         features_df = pd.read_csv(features_path)
-
-        # Normalize returned UniProt columns to query keys via DatasetInput map.
-        # Example: {'accession': 'Entry', 'sequence': 'Sequence'}.
-        rename_map: dict[str, str] = {}
-        for query_key, returned_col in self.dataset_input.uniprot_feature_column_map.items():
-            if query_key in features_df.columns:
-                continue
-            if returned_col in features_df.columns:
-                rename_map[returned_col] = query_key
-        if rename_map:
-            features_df = features_df.rename(columns=rename_map)
-
-        # UniProt TSV exports accession as 'Entry'; normalize to our merge key.
-        if "accession" not in features_df.columns and "Entry" in features_df.columns:
-            features_df = features_df.rename(columns={"Entry": "accession"})
-        if "accession" not in features_df.columns:
-            raise KeyError(
-                "Expected an accession column in features.csv; looked for "
-                "'accession' and UniProt default alias 'Entry'."
-            )
         # ----------------------------------------------------------------
 
         # ------------- align features with graph node order -------------
         index_df = index_df.copy()
-        index_df["accession"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
+        index_df["Entry"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
         index_df["_orig_node_id"] = index_df["i"].astype(np.int64) - 1
 
         # align node table to graph index order:
         # keep every node from index_df (left side), preserving its row order
         # join feature rows by accession; unmatched accessions get NaN features
         # filtering of invalid/missing nodes happens later (after transform/filter logic)
-        node_df = index_df.merge(features_df, on="accession", how="left", sort=False)
+        node_df = index_df.merge(features_df, on="Entry", how="left", sort=False)
         # ----------------------------------------------------------------
 
         # 1) transform (dataset/table level)
@@ -374,7 +354,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # 2) filter (dataset/table level)
         
         # --------------------- create the keep_mask ---------------------
-        keep_mask = ~node_df["accession"].astype(str).str.startswith(("UNK", "UPI"))
+        keep_mask = ~node_df["Entry"].astype(str).str.startswith(("UNK", "UPI"))
         if self.pre_filter is not None:
             filtered = self.pre_filter(node_df)
             if not isinstance(filtered, (pd.Series, np.ndarray, list, tuple)):
@@ -386,7 +366,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ----------------------------------------------------------------
 
         # --------- always require non-missing supervised fields ---------
-        required_cols = list(self.dataset_input.X) + [self.dataset_input.Y]
+        required_cols = self.dataset_input.X_return_field_names + self.dataset_input.Y_return_field_name
         missing_required = [col for col in required_cols if col not in node_df.columns]
         if missing_required:
             raise KeyError(f"Required columns missing after transform: {missing_required}")
@@ -533,10 +513,10 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
 
         data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
         data.node_id_to_accession = {
-            int(i): acc for i, acc in enumerate(node_df["accession"].astype(str).tolist())
+            int(i): acc for i, acc in enumerate(node_df["Entry"].astype(str).tolist())
         }
-        data.x_fields = tuple(self.dataset_input.X)
-        data.y_field = self.dataset_input.Y
+        data.x_fields = self.dataset_input.X_return_field_names
+        data.y_field = self.dataset_input.Y_return_field_name
         data.edge_attr_fields = tuple(edge_attr_cols)
 
         if self.pre_filter is not None:
