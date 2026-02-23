@@ -87,6 +87,10 @@ class DatasetInput:
             raise ValueError("`Y` must be a singleton dictionary")
         if "accession" in self.Y:
             raise ValueError("`Y` cannot be 'accession'")
+        if set(self.Y.keys()).intersection(self.X.keys()):
+            raise ValueError("Y field must not be present in X fields")
+        if set(self.Y.values()).intersection(self.X.values()):
+            raise ValueError("Y field must not be present in X fields")
         self._validation_ctx["X"] = self.X
         self._validation_ctx["Y"] = self.Y
         self._validation_ctx["num_X_fields"] = len(self.X)
@@ -330,6 +334,12 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ----------------------------------------------------------------
 
         # ------------- align features with graph node order -------------
+        if "Entry" not in features_df.columns:
+            raise KeyError(
+                    "features.csv is missing merge key 'Entry'. "
+                    "UniProt fetch likely returned no usable schema."
+                )
+
         index_df = index_df.copy()
         index_df["Entry"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
         index_df["_orig_node_id"] = index_df["i"].astype(np.int64) - 1
@@ -366,14 +376,14 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ----------------------------------------------------------------
 
         # --------- always require non-missing supervised fields ---------
-        required_cols = self.dataset_input.X_return_field_names + (self.dataset_input.Y_return_field_name,)
+        required_cols = [self.dataset_input.Y_return_field_name, *self.dataset_input.X_return_field_names]
         missing_required = [col for col in required_cols if col not in node_df.columns]
         if missing_required:
             raise KeyError(f"Required columns missing after transform: {missing_required}")
         # ----------------------------------------------------------------
 
         # ------------------- expand and apply the mask ------------------
-        keep_mask &= ~node_df[required_cols].isna().any(axis=1)
+        keep_mask &= ~node_df.loc[:, required_cols].isna().any(axis=1)
         node_df = node_df[keep_mask].copy()
         if node_df.empty:
             raise ValueError("All nodes were filtered out; cannot build dataset")
@@ -394,20 +404,18 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
 
         # ------------- build X from configured input fields -------------
         x_rows = []
-        for row in node_df.itertuples(index=False):
-            row_dict = row._asdict()
-            parts = [self._to_tensor(row_dict[col], field_name=col, cast_float=True) for col in self.dataset_input.X_return_field_names]
+        x_cols = [c for c in self.dataset_input.X_return_field_names if c != "Entry"]
+        for vals in node_df[x_cols].itertuples(index=False, name=None):
+            parts = [self._to_tensor(v, field_name=c, cast_float=True) for c, v in zip(x_cols, vals)]
             x_rows.append(torch.cat(parts, dim=0))
         x = torch.stack(x_rows, dim=0)
         # ----------------------------------------------------------------
 
         # ------------- build Y from configured target field -------------
         y_rows = []
-        for row in node_df.itertuples(index=False):
-            row_dict = row._asdict()
-            y_rows.append(self._to_tensor(row_dict[self.dataset_input.Y_return_field_name],
-                                          field_name=self.dataset_input.Y_return_field_name,
-                                          cast_float=True))
+        y_col = self.dataset_input.Y_return_field_name
+        for v in node_df[self.dataset_input.Y_return_field_name]:
+            y_rows.append(self._to_tensor(v, field_name=y_col, cast_float=True))
         y = torch.stack(y_rows, dim=0)
         # ----------------------------------------------------------------
 
@@ -517,7 +525,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         data.node_id_to_accession = {
             int(i): acc for i, acc in enumerate(node_df["Entry"].astype(str).tolist())
         }
-        data.x_fields = self.dataset_input.X_return_field_names
+        data.x_fields = [i for i in self.dataset_input.X_return_field_names if i != "Entry"]
         data.y_field = self.dataset_input.Y_return_field_name
         data.edge_attr_fields = tuple(edge_attr_cols)
 
