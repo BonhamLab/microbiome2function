@@ -28,20 +28,16 @@ class DatasetInput:
     - accession index CSV: columns ['uniref', 'i'] (1-based node ids)
     - edge chunk CSVs: file names like chunk_<i>.csv, must contain a destination id
       column (default: 'j'); all other columns can be used as edge attributes.
-    - uniprot_features: list/tuple of UniProt return field names (e.g. 'sequence', 'go_f')
-    - uniprot_feature_column_map: optional map from UniProt query key -> returned CSV column name
-      (e.g., {'accession': 'Entry', 'sequence': 'Sequence'})
-    - X: feature field names used as model inputs
-    - Y: target field name used as model output
+    - X: feature field names to query and their return names used as model inputs (e.g. {'sequence': 'Sequence'})
+    - Y: target field name to query and its return name used as model output
     """
-
+    # core dataset attrs
     path_to_accession_ids_csv_file: Path
     path_to_edge_csv_dir: Path
-    uniprot_features: list[str] | tuple[str, ...]
-    X: list[str] | tuple[str, ...]
-    Y: str
-    uniprot_feature_column_map: dict[str, str] | None = None
+    X: dict[str, str]
+    Y: dict[str, str]
 
+    # internals -- uniprot query params
     request_size: int = 25
     rps: float = 1
     max_retry: int | float = 20
@@ -51,6 +47,7 @@ class DatasetInput:
         default_factory=lambda: re.compile(r"chunk_\d+\.csv")
     )
 
+    # internals -- dataclass specifics (ensuring data quality)
     _validation_ctx: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _accession_ids_df: pd.DataFrame | None = field(default=None, init=False, repr=False)
 
@@ -59,38 +56,18 @@ class DatasetInput:
         self.path_to_edge_csv_dir = Path(self.path_to_edge_csv_dir)
         self._normalize_edge_schema()
         self._normalize_xy()
-        self._normalize_uniprot_feature_column_map()
-        self._normalize_uniprot_features()
         self.validate()
 
     def validate(self) -> None:
         self._validate_uniprot_request_params()
         self._validate_xy()
-        self._validate_uniprot_features()
-        self._validate_uniprot_feature_column_map()
         self._validate_accession_ids_csv_file()
         self._validate_edge_csv_files()
-
-    @staticmethod
-    def _normalize_field_names(fields: list[str] | tuple[str, ...], *, arg_name: str) -> tuple[str, ...]:
-        if not isinstance(fields, (list, tuple)):
-            raise TypeError(f"`{arg_name}` must be list[str] or tuple[str, ...]")
-        out: list[str] = []
-        for field_name in fields:
-            if not isinstance(field_name, str):
-                raise TypeError(
-                    f"All entries in `{arg_name}` must be strings, got {type(field_name)}"
-                )
-            cleaned = field_name.strip()
-            if cleaned:
-                out.append(cleaned)
-        return tuple(dict.fromkeys(out))  # dedupe while preserving order
-
+    
     def _normalize_xy(self) -> None:
-        self.X = self._normalize_field_names(self.X, arg_name="X")
-        if not isinstance(self.Y, str):
-            raise TypeError(f"`Y` must be str, got {type(self.Y)}")
-        self.Y = self.Y.strip()
+        self.X = {k.strip(): v.strip() for k, v in self.X.items()}
+        self.X["accession"] = "Entry"
+        self.Y = {k.strip(): v.strip() for k, v in self.Y.items()}
 
     def _normalize_edge_schema(self) -> None:
         if not isinstance(self.edge_dst_column, str):
@@ -101,23 +78,15 @@ class DatasetInput:
         if not self.edge_dst_column:
             raise ValueError("`edge_dst_column` cannot be empty")
 
-        if self.edge_attr_columns is None:
-            return
-        normalized = self._normalize_field_names(
-            self.edge_attr_columns, arg_name="edge_attr_columns"
-        )
-        self.edge_attr_columns = tuple(
-            col for col in normalized if col != self.edge_dst_column
-        )
-
     def _validate_xy(self) -> None:
+        if not all([isinstance(fields, dict) for fields in [self.X, self.Y]]):
+            raise TypeError(f"Both X and Y must be of type dict[str, str]")
         if len(self.X) == 0:
             raise ValueError("`X` cannot be empty")
-        if not self.Y:
-            raise ValueError("`Y` cannot be empty")
+        if len(self.Y) != 1:
+            raise ValueError("`Y` must be a singleton dictionary")
         if self.Y == "accession":
             raise ValueError("`Y` cannot be 'accession'")
-
         self._validation_ctx["X"] = self.X
         self._validation_ctx["Y"] = self.Y
         self._validation_ctx["num_X_fields"] = len(self.X)
@@ -133,92 +102,6 @@ class DatasetInput:
         self._validation_ctx["request_size"] = self.request_size
         self._validation_ctx["rps"] = self.rps
         self._validation_ctx["max_retry"] = self.max_retry
-
-    def _normalize_uniprot_features(self) -> None:
-        normalized = list(
-            self._normalize_field_names(self.uniprot_features, arg_name="uniprot_features")
-        )
-
-        # deduplicate while preserving order
-        normalized = list(dict.fromkeys(normalized))
-
-        # ensure all required supervised fields are requested from UniProt
-        normalized.extend(self.X)
-        normalized.append(self.Y)
-
-        # ensure accession is always requested for stable joins/alignment
-        if "accession" not in normalized:
-            normalized.insert(0, "accession")
-
-        self.uniprot_features = tuple(normalized)
-
-    def _normalize_uniprot_feature_column_map(self) -> None:
-        if self.uniprot_feature_column_map is None:
-            self.uniprot_feature_column_map = {}
-            return
-        if not isinstance(self.uniprot_feature_column_map, dict):
-            raise TypeError(
-                "`uniprot_feature_column_map` must be dict[str, str] | None"
-            )
-
-        normalized: dict[str, str] = {}
-        for key, value in self.uniprot_feature_column_map.items():
-            if not isinstance(key, str) or not isinstance(value, str):
-                raise TypeError(
-                    "`uniprot_feature_column_map` must only contain string keys and values"
-                )
-            k = key.strip()
-            v = value.strip()
-            if not k or not v:
-                raise ValueError(
-                    "`uniprot_feature_column_map` cannot contain empty keys/values"
-                )
-            normalized[k] = v
-        self.uniprot_feature_column_map = normalized
-
-    def _validate_uniprot_feature_column_map(self) -> None:
-        assert self.uniprot_feature_column_map is not None
-        invalid_keys = [
-            key for key in self.uniprot_feature_column_map
-            if key not in self.uniprot_features
-        ]
-        if invalid_keys:
-            raise ValueError(
-                "Keys in `uniprot_feature_column_map` must be present in "
-                f"`uniprot_features`. Invalid keys: {invalid_keys}"
-            )
-
-        values = list(self.uniprot_feature_column_map.values())
-        if len(values) != len(set(values)):
-            raise ValueError(
-                "Values in `uniprot_feature_column_map` must be unique to avoid "
-                "column rename collisions."
-            )
-
-        self._validation_ctx["uniprot_feature_column_map"] = dict(
-            self.uniprot_feature_column_map
-        )
-
-    def _validate_uniprot_features(self) -> None:
-        if len(self.uniprot_features) == 0:
-            raise ValueError("`uniprot_features` cannot be empty")
-
-        if any(not feature for feature in self.uniprot_features):
-            raise ValueError("`uniprot_features` cannot contain empty strings")
-
-        if "accession" not in self.uniprot_features:
-            raise ValueError("`uniprot_features` must include 'accession'")
-
-        missing_for_x = [field_name for field_name in self.X if field_name not in self.uniprot_features]
-        if missing_for_x:
-            raise ValueError(
-                f"`X` fields missing from `uniprot_features`: {missing_for_x}"
-            )
-        if self.Y not in self.uniprot_features:
-            raise ValueError(f"`Y` field '{self.Y}' missing from `uniprot_features`")
-
-        self._validation_ctx["uniprot_features"] = self.uniprot_features
-        self._validation_ctx["num_uniprot_features"] = len(self.uniprot_features)
 
     def _validate_accession_ids_csv_file(self) -> None:
         if not self.path_to_accession_ids_csv_file.exists():
@@ -248,7 +131,7 @@ class DatasetInput:
         self._validation_ctx["min_node_id"] = int(df["i"].min())
         self._validation_ctx["max_node_id"] = int(df["i"].max())
         self._validation_ctx["num_nodes"] = int(df.shape[0])
-
+    
     def _validate_edge_csv_files(self) -> None:
         if not self.path_to_edge_csv_dir.exists():
             raise FileNotFoundError(f"Edge CSV directory not found: {self.path_to_edge_csv_dir}")
@@ -311,10 +194,22 @@ class DatasetInput:
         if "min_node_id" not in self._validation_ctx or "max_node_id" not in self._validation_ctx:
             self._validate_accession_ids_csv_file()
         return self._validation_ctx["min_node_id"], self._validation_ctx["max_node_id"]
+    
+    @property
+    def X_query_field_names(self) -> tuple[str, ...]:
+        return tuple(self.X.keys())
+    
+    @property
+    def X_return_field_names(self) -> tuple[str, ...]:
+        return tuple(self.X.values())
 
     @property
-    def uniprot_query_fields(self) -> tuple[str, ...]:
-        return tuple(self.uniprot_features)
+    def Y_query_field_name(self) -> str:
+        return str(self.Y.keys()[0])
+    
+    @property
+    def Y_return_field_name(self) -> str:
+        return str(self.Y.values()[0])
 
 
 class ProteinGraphInMemoryDataset(InMemoryDataset):
