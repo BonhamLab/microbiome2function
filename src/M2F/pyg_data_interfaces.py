@@ -28,16 +28,16 @@ class DatasetInput:
     - accession index CSV: columns ['uniref', 'i'] (1-based node ids)
     - edge chunk CSVs: file names like chunk_<i>.csv, must contain a destination id
       column (default: 'j'); all other columns can be used as edge attributes.
-    - uniprot_features: list/tuple of UniProt return field names (e.g. 'sequence', 'go_f')
-    - X: feature field names used as model inputs
-    - Y: target field name used as model output
+    - X: feature field names to query and their return names used as model inputs (e.g. {'sequence': 'Sequence'})
+    - Y: target field name to query and its return name used as model output
     """
-
+    # core dataset attrs
     path_to_accession_ids_csv_file: Path
     path_to_edge_csv_dir: Path
-    uniprot_features: list[str] | tuple[str, ...]
-    X: list[str] | tuple[str, ...]
-    Y: str
+    X: dict[str, str]
+    Y: dict[str, str]
+
+    # internals -- uniprot query params
     request_size: int = 25
     rps: float = 1
     max_retry: int | float = 20
@@ -47,6 +47,7 @@ class DatasetInput:
         default_factory=lambda: re.compile(r"chunk_\d+\.csv")
     )
 
+    # internals -- dataclass specifics (ensuring data quality)
     _validation_ctx: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _accession_ids_df: pd.DataFrame | None = field(default=None, init=False, repr=False)
 
@@ -55,36 +56,18 @@ class DatasetInput:
         self.path_to_edge_csv_dir = Path(self.path_to_edge_csv_dir)
         self._normalize_edge_schema()
         self._normalize_xy()
-        self._normalize_uniprot_features()
         self.validate()
+        self.X["accession"] = "Entry" # <-- we always want to request accession
 
     def validate(self) -> None:
         self._validate_uniprot_request_params()
         self._validate_xy()
-        self._validate_uniprot_features()
         self._validate_accession_ids_csv_file()
         self._validate_edge_csv_files()
-
-    @staticmethod
-    def _normalize_field_names(fields: list[str] | tuple[str, ...], *, arg_name: str) -> tuple[str, ...]:
-        if not isinstance(fields, (list, tuple)):
-            raise TypeError(f"`{arg_name}` must be list[str] or tuple[str, ...]")
-        out: list[str] = []
-        for field_name in fields:
-            if not isinstance(field_name, str):
-                raise TypeError(
-                    f"All entries in `{arg_name}` must be strings, got {type(field_name)}"
-                )
-            cleaned = field_name.strip()
-            if cleaned:
-                out.append(cleaned)
-        return tuple(dict.fromkeys(out))  # dedupe while preserving order
-
+    
     def _normalize_xy(self) -> None:
-        self.X = self._normalize_field_names(self.X, arg_name="X")
-        if not isinstance(self.Y, str):
-            raise TypeError(f"`Y` must be str, got {type(self.Y)}")
-        self.Y = self.Y.strip()
+        self.X = {k.strip(): v.strip() for k, v in self.X.items()}
+        self.Y = {k.strip(): v.strip() for k, v in self.Y.items()}
 
     def _normalize_edge_schema(self) -> None:
         if not isinstance(self.edge_dst_column, str):
@@ -95,23 +78,19 @@ class DatasetInput:
         if not self.edge_dst_column:
             raise ValueError("`edge_dst_column` cannot be empty")
 
-        if self.edge_attr_columns is None:
-            return
-        normalized = self._normalize_field_names(
-            self.edge_attr_columns, arg_name="edge_attr_columns"
-        )
-        self.edge_attr_columns = tuple(
-            col for col in normalized if col != self.edge_dst_column
-        )
-
     def _validate_xy(self) -> None:
+        if not all([isinstance(fields, dict) for fields in [self.X, self.Y]]):
+            raise TypeError(f"Both X and Y must be of type dict[str, str]")
         if len(self.X) == 0:
             raise ValueError("`X` cannot be empty")
-        if not self.Y:
-            raise ValueError("`Y` cannot be empty")
-        if self.Y == "accession":
+        if len(self.Y) != 1:
+            raise ValueError("`Y` must be a singleton dictionary")
+        if "accession" in self.Y:
             raise ValueError("`Y` cannot be 'accession'")
-
+        if set(self.Y.keys()).intersection(self.X.keys()):
+            raise ValueError("Y field must not be present in X fields")
+        if set(self.Y.values()).intersection(self.X.values()):
+            raise ValueError("Y field must not be present in X fields")
         self._validation_ctx["X"] = self.X
         self._validation_ctx["Y"] = self.Y
         self._validation_ctx["num_X_fields"] = len(self.X)
@@ -127,45 +106,6 @@ class DatasetInput:
         self._validation_ctx["request_size"] = self.request_size
         self._validation_ctx["rps"] = self.rps
         self._validation_ctx["max_retry"] = self.max_retry
-
-    def _normalize_uniprot_features(self) -> None:
-        normalized = list(
-            self._normalize_field_names(self.uniprot_features, arg_name="uniprot_features")
-        )
-
-        # deduplicate while preserving order
-        normalized = list(dict.fromkeys(normalized))
-
-        # ensure all required supervised fields are requested from UniProt
-        normalized.extend(self.X)
-        normalized.append(self.Y)
-
-        # ensure accession is always requested for stable joins/alignment
-        if "accession" not in normalized:
-            normalized.insert(0, "accession")
-
-        self.uniprot_features = tuple(normalized)
-
-    def _validate_uniprot_features(self) -> None:
-        if len(self.uniprot_features) == 0:
-            raise ValueError("`uniprot_features` cannot be empty")
-
-        if any(not feature for feature in self.uniprot_features):
-            raise ValueError("`uniprot_features` cannot contain empty strings")
-
-        if "accession" not in self.uniprot_features:
-            raise ValueError("`uniprot_features` must include 'accession'")
-
-        missing_for_x = [field_name for field_name in self.X if field_name not in self.uniprot_features]
-        if missing_for_x:
-            raise ValueError(
-                f"`X` fields missing from `uniprot_features`: {missing_for_x}"
-            )
-        if self.Y not in self.uniprot_features:
-            raise ValueError(f"`Y` field '{self.Y}' missing from `uniprot_features`")
-
-        self._validation_ctx["uniprot_features"] = self.uniprot_features
-        self._validation_ctx["num_uniprot_features"] = len(self.uniprot_features)
 
     def _validate_accession_ids_csv_file(self) -> None:
         if not self.path_to_accession_ids_csv_file.exists():
@@ -195,7 +135,7 @@ class DatasetInput:
         self._validation_ctx["min_node_id"] = int(df["i"].min())
         self._validation_ctx["max_node_id"] = int(df["i"].max())
         self._validation_ctx["num_nodes"] = int(df.shape[0])
-
+    
     def _validate_edge_csv_files(self) -> None:
         if not self.path_to_edge_csv_dir.exists():
             raise FileNotFoundError(f"Edge CSV directory not found: {self.path_to_edge_csv_dir}")
@@ -227,6 +167,14 @@ class DatasetInput:
                     f"Column '{self.edge_dst_column}' must be integer dtype in {path}"
                 )
 
+        # Enforce one edge chunk file per node row in the index CSV.
+        expected_num_edge_files = int(self.accession_ids.shape[0])
+        if len(files) != expected_num_edge_files:
+            raise ValueError(
+                "Number of edge CSV files does not match accession index row count: "
+                f"{len(files)} files vs {expected_num_edge_files} index rows."
+            )
+
         self._validation_ctx["num_edge_files"] = len(files)
 
     @property
@@ -250,10 +198,22 @@ class DatasetInput:
         if "min_node_id" not in self._validation_ctx or "max_node_id" not in self._validation_ctx:
             self._validate_accession_ids_csv_file()
         return self._validation_ctx["min_node_id"], self._validation_ctx["max_node_id"]
+    
+    @property
+    def X_query_field_names(self) -> tuple[str, ...]:
+        return tuple(self.X.keys())
+    
+    @property
+    def X_return_field_names(self) -> tuple[str, ...]:
+        return tuple(self.X.values())
 
     @property
-    def uniprot_query_fields(self) -> tuple[str, ...]:
-        return tuple(self.uniprot_features)
+    def Y_query_field_name(self) -> str:
+        return str(*self.Y.keys())
+    
+    @property
+    def Y_return_field_name(self) -> str:
+        return str(*self.Y.values())
 
 
 class ProteinGraphInMemoryDataset(InMemoryDataset):
@@ -317,7 +277,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         if not features_path.exists():
             fetched_features = fetch_uniprotkb_fields(
                         uniref_ids=self.original_node_accessions,
-                        fields=list(self.dataset_input.uniprot_features),
+                        fields=[self.dataset_input.Y_query_field_name, *self.dataset_input.X_query_field_names],
                         request_size=self.dataset_input.request_size,
                         rps=self.dataset_input.rps,
                         max_retry=self.dataset_input.max_retry
@@ -371,26 +331,24 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ------------------------ read the data -------------------------
         index_df = pd.read_csv(index_path)
         features_df = pd.read_csv(features_path)
-        # UniProt TSV exports accession as 'Entry'; normalize to our merge key.
-        if "accession" not in features_df.columns and "Entry" in features_df.columns:
-            features_df = features_df.rename(columns={"Entry": "accession"})
-        if "accession" not in features_df.columns:
-            raise KeyError(
-                "Expected an accession column in features.csv; looked for "
-                "'accession' and UniProt default alias 'Entry'."
-            )
         # ----------------------------------------------------------------
 
         # ------------- align features with graph node order -------------
+        if "Entry" not in features_df.columns:
+            raise KeyError(
+                    "features.csv is missing merge key 'Entry'. "
+                    "UniProt fetch likely returned no usable schema."
+                )
+
         index_df = index_df.copy()
-        index_df["accession"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
+        index_df["Entry"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
         index_df["_orig_node_id"] = index_df["i"].astype(np.int64) - 1
 
         # align node table to graph index order:
         # keep every node from index_df (left side), preserving its row order
         # join feature rows by accession; unmatched accessions get NaN features
         # filtering of invalid/missing nodes happens later (after transform/filter logic)
-        node_df = index_df.merge(features_df, on="accession", how="left", sort=False)
+        node_df = index_df.merge(features_df, on="Entry", how="left", sort=False)
         # ----------------------------------------------------------------
 
         # 1) transform (dataset/table level)
@@ -406,7 +364,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # 2) filter (dataset/table level)
         
         # --------------------- create the keep_mask ---------------------
-        keep_mask = ~node_df["accession"].astype(str).str.startswith(("UNK", "UPI"))
+        keep_mask = ~node_df["Entry"].astype(str).str.startswith(("UNK", "UPI"))
         if self.pre_filter is not None:
             filtered = self.pre_filter(node_df)
             if not isinstance(filtered, (pd.Series, np.ndarray, list, tuple)):
@@ -418,14 +376,14 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ----------------------------------------------------------------
 
         # --------- always require non-missing supervised fields ---------
-        required_cols = list(self.dataset_input.X) + [self.dataset_input.Y]
+        required_cols = [self.dataset_input.Y_return_field_name, *self.dataset_input.X_return_field_names]
         missing_required = [col for col in required_cols if col not in node_df.columns]
         if missing_required:
             raise KeyError(f"Required columns missing after transform: {missing_required}")
         # ----------------------------------------------------------------
 
         # ------------------- expand and apply the mask ------------------
-        keep_mask &= ~node_df[required_cols].isna().any(axis=1)
+        keep_mask &= ~node_df.loc[:, required_cols].isna().any(axis=1)
         node_df = node_df[keep_mask].copy()
         if node_df.empty:
             raise ValueError("All nodes were filtered out; cannot build dataset")
@@ -446,18 +404,18 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
 
         # ------------- build X from configured input fields -------------
         x_rows = []
-        for row in node_df.itertuples(index=False):
-            row_dict = row._asdict()
-            parts = [self._to_tensor(row_dict[col], field_name=col, cast_float=True) for col in self.dataset_input.X]
+        x_cols = [c for c in self.dataset_input.X_return_field_names if c != "Entry"]
+        for vals in node_df[x_cols].itertuples(index=False, name=None):
+            parts = [self._to_tensor(v, field_name=c, cast_float=True) for c, v in zip(x_cols, vals)]
             x_rows.append(torch.cat(parts, dim=0))
         x = torch.stack(x_rows, dim=0)
         # ----------------------------------------------------------------
 
         # ------------- build Y from configured target field -------------
         y_rows = []
-        for row in node_df.itertuples(index=False):
-            row_dict = row._asdict()
-            y_rows.append(self._to_tensor(row_dict[self.dataset_input.Y], field_name=self.dataset_input.Y, cast_float=True))
+        y_col = self.dataset_input.Y_return_field_name
+        for v in node_df[self.dataset_input.Y_return_field_name]:
+            y_rows.append(self._to_tensor(v, field_name=y_col, cast_float=True))
         y = torch.stack(y_rows, dim=0)
         # ----------------------------------------------------------------
 
@@ -565,10 +523,10 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
 
         data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
         data.node_id_to_accession = {
-            int(i): acc for i, acc in enumerate(node_df["accession"].astype(str).tolist())
+            int(i): acc for i, acc in enumerate(node_df["Entry"].astype(str).tolist())
         }
-        data.x_fields = tuple(self.dataset_input.X)
-        data.y_field = self.dataset_input.Y
+        data.x_fields = [i for i in self.dataset_input.X_return_field_names if i != "Entry"]
+        data.y_field = self.dataset_input.Y_return_field_name
         data.edge_attr_fields = tuple(edge_attr_cols)
 
         if self.pre_filter is not None:
