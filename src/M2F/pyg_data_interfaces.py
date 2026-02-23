@@ -57,6 +57,7 @@ class DatasetInput:
         self._normalize_edge_schema()
         self._normalize_xy()
         self.validate()
+        self.X["accession"] = "Entry" # <-- we always want to request accession
 
     def validate(self) -> None:
         self._validate_uniprot_request_params()
@@ -66,7 +67,6 @@ class DatasetInput:
     
     def _normalize_xy(self) -> None:
         self.X = {k.strip(): v.strip() for k, v in self.X.items()}
-        self.X["accession"] = "Entry"
         self.Y = {k.strip(): v.strip() for k, v in self.Y.items()}
 
     def _normalize_edge_schema(self) -> None:
@@ -85,7 +85,7 @@ class DatasetInput:
             raise ValueError("`X` cannot be empty")
         if len(self.Y) != 1:
             raise ValueError("`Y` must be a singleton dictionary")
-        if self.Y == "accession":
+        if "accession" in self.Y:
             raise ValueError("`Y` cannot be 'accession'")
         self._validation_ctx["X"] = self.X
         self._validation_ctx["Y"] = self.Y
@@ -205,11 +205,11 @@ class DatasetInput:
 
     @property
     def Y_query_field_name(self) -> str:
-        return str(self.Y.keys()[0])
+        return str(*self.Y.keys())
     
     @property
     def Y_return_field_name(self) -> str:
-        return str(self.Y.values()[0])
+        return str(*self.Y.values())
 
 
 class ProteinGraphInMemoryDataset(InMemoryDataset):
@@ -366,7 +366,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ----------------------------------------------------------------
 
         # --------- always require non-missing supervised fields ---------
-        required_cols = self.dataset_input.X_return_field_names + self.dataset_input.Y_return_field_name
+        required_cols = self.dataset_input.X_return_field_names + (self.dataset_input.Y_return_field_name,)
         missing_required = [col for col in required_cols if col not in node_df.columns]
         if missing_required:
             raise KeyError(f"Required columns missing after transform: {missing_required}")
@@ -396,7 +396,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         x_rows = []
         for row in node_df.itertuples(index=False):
             row_dict = row._asdict()
-            parts = [self._to_tensor(row_dict[col], field_name=col, cast_float=True) for col in self.dataset_input.X]
+            parts = [self._to_tensor(row_dict[col], field_name=col, cast_float=True) for col in self.dataset_input.X_return_field_names]
             x_rows.append(torch.cat(parts, dim=0))
         x = torch.stack(x_rows, dim=0)
         # ----------------------------------------------------------------
@@ -405,7 +405,9 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         y_rows = []
         for row in node_df.itertuples(index=False):
             row_dict = row._asdict()
-            y_rows.append(self._to_tensor(row_dict[self.dataset_input.Y], field_name=self.dataset_input.Y, cast_float=True))
+            y_rows.append(self._to_tensor(row_dict[self.dataset_input.Y_return_field_name],
+                                          field_name=self.dataset_input.Y_return_field_name,
+                                          cast_float=True))
         y = torch.stack(y_rows, dim=0)
         # ----------------------------------------------------------------
 
