@@ -53,4 +53,4 @@ class GraphConvNodeClassifier(Module):
         h = self.dropout(h)
         h = self.conv2(h, edge_index, edge_attr)
         out = self.lin(h)
-        return out if self.training else (self.sigmoid(out) >= 0.5).float() # multi-label classification
+        return out
