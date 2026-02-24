@@ -348,7 +348,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # keep every node from index_df (left side), preserving its row order
         # join feature rows by accession; unmatched accessions get NaN features
         # filtering of invalid/missing nodes happens later (after transform/filter logic)
-        node_df = index_df.merge(features_df, on="Entry", how="left", sort=False)
+        node_df = index_df.merge(features_df, on="Entry", how="left", sort=False) # BASICALLY INDEX THE FEATURES
         # ----------------------------------------------------------------
 
         # 1) transform (dataset/table level)
@@ -364,7 +364,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # 2) filter (dataset/table level)
         
         # --------------------- create the keep_mask ---------------------
-        keep_mask = ~node_df["Entry"].astype(str).str.startswith(("UNK", "UPI"))
+        keep_mask = ~node_df["Entry"].astype(str).str.startswith(("UNK", "UPI")) # throw away the UNK & UPI prefixed entries
         if self.pre_filter is not None:
             filtered = self.pre_filter(node_df)
             if not isinstance(filtered, (pd.Series, np.ndarray, list, tuple)):
@@ -383,6 +383,11 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         # ----------------------------------------------------------------
 
         # ------------------- expand and apply the mask ------------------
+        # V V V what this does is it AND-combines the current keep mask
+        # with "consider all rows and all required columns, then compute
+        # True/False for each entry it that table based on isna, then collapse
+        # all the columns within each row (note axis=1) to get a 1-D Series
+        # where True values denote entries with no missing values."
         keep_mask &= ~node_df.loc[:, required_cols].isna().any(axis=1)
         node_df = node_df[keep_mask].copy()
         if node_df.empty:
@@ -456,7 +461,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
                 continue
             src_new = id_map[src_old] # get the new index
             
-            if src_new < 0:
+            if src_new < 0: # this node was dropped then, so move on
                 continue
 
             edge_df = pd.read_csv(edge_path) # read the destinations
