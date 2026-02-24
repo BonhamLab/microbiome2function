@@ -485,7 +485,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
             # for in-bounds destinations, assign id_map[dst_old] (new id or -1)
             dst_mapped[in_bounds] = id_map[dst_old[in_bounds]]
             # keep only those where dst is mapped (that is, dst node was kept)
-            keep_edges = dst_mapped >= 0
+            keep_edges = dst_mapped >= 0 # use it throw away -1 entries down the road
             if not keep_edges.any():
                 continue
             # src_arr is just [src_new, src_new, ..., src_new] repeated once per kept edge
