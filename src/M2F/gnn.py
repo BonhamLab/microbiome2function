@@ -7,7 +7,7 @@ from torch import Tensor, cat
 
 class GraphConv(MessagePassing):
 
-    def __init__(self, in_dim: int, edge_dim: int, msg_dim: int, state_dim: int, aggr = 'max', *, aggr_kwargs = None, flow = "source_to_target", node_dim = -2, decomposed_layers = 1, device=None):
+    def __init__(self, in_dim: int, msg_dim: int, state_dim: int, aggr = 'max', *, aggr_kwargs = None, flow = "source_to_target", node_dim = -2, decomposed_layers = 1, device=None):
         super().__init__(aggr, aggr_kwargs=aggr_kwargs, flow=flow, node_dim=node_dim, decomposed_layers=decomposed_layers)
 
         a_data = Tensor(1, device=device)
@@ -16,8 +16,8 @@ class GraphConv(MessagePassing):
         
         self.gamma = Parameter(a_data)
         self.beta = Parameter(b_data)
-        self.msg_lin_transform = Linear(in_dim + edge_dim, msg_dim, bias=False)
-        self.upd_lin_transform = Linear(state_dim + msg_dim, state_dim, bias=True)
+        self.msg_lin_transform = Linear(in_dim, msg_dim, bias=False)
+        self.upd_lin_transform = Linear(in_dim + msg_dim, state_dim, bias=True)
         self.relu = ReLU()
 
     def _edge_transform(self, w: Tensor) -> Tensor:
@@ -25,8 +25,7 @@ class GraphConv(MessagePassing):
     
     def message(self, h_j: Tensor, edge_attr: Tensor) -> Tensor:
         e_j = self._edge_transform(edge_attr)
-        pre_m_j = cat([h_j, e_j], dim=-1)
-        m_j = self.msg_lin_transform(pre_m_j)
+        m_j = self.msg_lin_transform(e_j * h_j)
         return m_j
     
     def update(self, aggr_out: Tensor, h: Tensor) -> Tensor:
@@ -38,11 +37,11 @@ class GraphConv(MessagePassing):
         return self.propagate(h=h, edge_index=edge_index, edge_attr=edge_attr)
 
 
-class Decoder(Module):
-    def __init__(self, in_dim: int, edge_dim: int, msg_dim: int, state_dim: int, out_dim: int):
+class GraphConvNodeClassifier(Module):
+    def __init__(self, in_dim: int, msg_dim: int, state_dim: int, out_dim: int):
         super().__init__()
-        self.conv1 = GraphConv(in_dim, edge_dim, msg_dim, state_dim)
-        self.conv2 = GraphConv(state_dim, edge_dim, msg_dim, state_dim)
+        self.conv1 = GraphConv(in_dim, msg_dim, state_dim)
+        self.conv2 = GraphConv(state_dim, msg_dim, state_dim)
         self.lin = Linear(state_dim, out_dim)
         self.relu = ReLU()
         self.dropout = Dropout(p=0.5)
