@@ -3,11 +3,13 @@ import pandas as pd
 import torch
 import numpy as np
 from torch_geometric.data import InMemoryDataset, Data
+from torch_geometric.transforms import RandomNodeSplit
 
 # built-in
 from dataclasses import dataclass, field
 from typing import Iterator, Any
 from pathlib import Path
+from math import floor
 import re
 import shutil
 import logging
@@ -226,10 +228,22 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         pre_transform=None,
         pre_filter=None,
         log: bool = True,
-        force_reload: bool = False
+        force_reload: bool = False,
+        *,
+        val_set_size: float = 0.1,
+        test_set_size: float = 0.1
     ) -> None:
         self.dataset_input = dataset_input
         self.dataset_input.validate()
+
+        if ((val_set_size + test_set_size) >= 1.0
+            or val_set_size < 0.0
+            or test_set_size < 0.0):
+            raise ValueError()
+        
+        self.val_set_size   = val_set_size
+        self.test_set_size  = test_set_size
+
         super().__init__(
             root=str(root),
             log=log,
@@ -238,7 +252,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
             pre_filter=pre_filter,
             force_reload=force_reload
         )
-
+        
         processed_path = Path(self.processed_paths[0])
         if processed_path.exists():
             self.data, self.slices = torch.load(processed_path, weights_only=False)
@@ -539,12 +553,37 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         if self.pre_transform is not None:
             data.pre_transform_applied = True
 
-        torch.save(self.collate([data]), self.processed_paths[0])
+        # ---------------- attach train, val, test masks -----------------
+        total_samples = x.size(dim=0)
+        val_set_size = floor(self.val_set_size * total_samples)
+        test_set_size = floor(self.test_set_size * total_samples)
+        data_split_transform = RandomNodeSplit(num_val=val_set_size, num_test=test_set_size)
+        split_data = data_split_transform(data)
+        # ----------------------------------------------------------------
+
+        torch.save(self.collate([split_data]), self.processed_paths[0])
         _logger.info(
             "Processed graph saved to %s (nodes=%d, edges=%d, x_dim=%d, y_dim=%d)",
             self.processed_paths[0],
-            data.num_nodes,
-            data.num_edges,
-            data.x.size(-1),
-            data.y.size(-1) if data.y.ndim > 1 else 1,
+            split_data.num_nodes,
+            split_data.num_edges,
+            split_data.x.size(-1),
+            split_data.y.size(-1) if split_data.y.ndim > 1 else 1,
         )
+
+
+class ProteinGraphOnDisk:
+    pass
+
+
+class ProteinDataset:
+    pass
+
+
+__all__ = [
+
+]
+
+
+if __name__ == "__main__":
+    pass
