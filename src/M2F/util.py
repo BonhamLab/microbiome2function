@@ -2,6 +2,7 @@ import re
 import os
 import warnings
 import functools
+import datetime
 from typing import Any, Type
 
 def files_from(dir_path: str, pattern: re.Pattern = None):
@@ -28,3 +29,7 @@ def suppress_warnings(*warning_types: Type[Warning]):
                 return func(*args, **kwargs)
         return wrapper
     return decorator
+
+def current_time() -> str:
+    """Returns the current time in the Y-%m-%d_%H%M%S format"""
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
