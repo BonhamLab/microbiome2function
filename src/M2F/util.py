@@ -33,3 +33,6 @@ def suppress_warnings(*warning_types: Type[Warning]):
 def current_time() -> str:
     """Returns the current time in the Y-%m-%d_%H%M%S format"""
     return datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+if __name__ == "__main__":
+    pass
