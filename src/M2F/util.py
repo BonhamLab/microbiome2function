@@ -92,7 +92,8 @@ class ZarrFeatureStore:
         read_only: bool
     ) -> tuple[LocalStore, Group]:
         store = LocalStore(store_on_disk_location, read_only=read_only)
-        root = zarr.group(store, overwrite=False)
+        mode = "r" if read_only else "a"
+        root = zarr.open_group(store=store, mode=mode)
         return store, root
 
     @staticmethod
