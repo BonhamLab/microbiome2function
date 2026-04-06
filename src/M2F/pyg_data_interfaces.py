@@ -1,13 +1,27 @@
+from __future__ import annotations
+
 # third-party
-import pandas as pd
 import torch
+from torch.utils.data.dataset import Dataset
+from torch.utils.data.dataloader import DataLoader as pt_DataLoader
+from torch_geometric.data import \
+    (InMemoryDataset, 
+    Data,
+    FeatureStore,
+    GraphStore,
+    TensorAttr,
+    EdgeAttr)
+from torch_geometric.typing import EdgeTensorType, FeatureTensorType
+from torch_geometric.loader import NeighborSampler, NeighborLoader, DataLoader as pyg_DataLoader
+from torch_geometric.transforms import RandomNodeSplit
 import numpy as np
-from torch_geometric.data import InMemoryDataset, Data
+import pandas as pd
 
 # built-in
 from dataclasses import dataclass, field
-from typing import Iterator, Any
+from typing import Iterator, Any, Optional
 from pathlib import Path
+from math import floor
 import re
 import shutil
 import logging
@@ -216,6 +230,7 @@ class DatasetInput:
         return str(*self.Y.values())
 
 
+# In-RAM/VRAM data interface for GNNs
 class ProteinGraphInMemoryDataset(InMemoryDataset):
 
     def __init__(
@@ -226,10 +241,22 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         pre_transform=None,
         pre_filter=None,
         log: bool = True,
-        force_reload: bool = False
+        force_reload: bool = False,
+        *,
+        val_set_size: float = 0.1,
+        test_set_size: float = 0.1
     ) -> None:
         self.dataset_input = dataset_input
         self.dataset_input.validate()
+
+        if ((val_set_size + test_set_size) >= 1.0
+            or val_set_size < 0.0
+            or test_set_size < 0.0):
+            raise ValueError()
+        
+        self.val_set_size   = val_set_size
+        self.test_set_size  = test_set_size
+
         super().__init__(
             root=str(root),
             log=log,
@@ -238,7 +265,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
             pre_filter=pre_filter,
             force_reload=force_reload
         )
-
+        
         processed_path = Path(self.processed_paths[0])
         if processed_path.exists():
             self.data, self.slices = torch.load(processed_path, weights_only=False)
@@ -539,12 +566,227 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         if self.pre_transform is not None:
             data.pre_transform_applied = True
 
-        torch.save(self.collate([data]), self.processed_paths[0])
+        # ---------------- attach train, val, test masks -----------------
+        total_samples = x.size(dim=0)
+        val_set_size = floor(self.val_set_size * total_samples)
+        test_set_size = floor(self.test_set_size * total_samples)
+        data_split_transform = RandomNodeSplit(num_val=val_set_size, num_test=test_set_size)
+        split_data = data_split_transform(data)
+        # ----------------------------------------------------------------
+
+        torch.save(self.collate([split_data]), self.processed_paths[0])
         _logger.info(
             "Processed graph saved to %s (nodes=%d, edges=%d, x_dim=%d, y_dim=%d)",
             self.processed_paths[0],
-            data.num_nodes,
-            data.num_edges,
-            data.x.size(-1),
-            data.y.size(-1) if data.y.ndim > 1 else 1,
+            split_data.num_nodes,
+            split_data.num_edges,
+            split_data.x.size(-1),
+            split_data.y.size(-1) if split_data.y.ndim > 1 else 1,
         )
+    
+    def train_loader(self, num_neighbors: list[int], batch_size: int, shuffle: bool) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].train_mask,
+            batch_size=batch_size,
+            shuffle=shuffle,
+        )
+
+    def val_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].val_mask,
+            batch_size=batch_size,
+            shuffle=False,
+        )
+
+    def test_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].test_mask,
+            batch_size=batch_size,
+            shuffle=False,
+        )
+
+
+class _ProteinGraphStore(GraphStore):
+
+    def __init__(self, edge_attr_cls = None):
+        super().__init__(edge_attr_cls)
+        self.store: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = dict()
+
+    @staticmethod
+    def key(attr: EdgeAttr) -> tuple:
+        return (attr.edge_type, attr.layout.value, attr.is_sorted, attr.size)
+
+    def _put_edge_index(
+        self,
+        edge_index: EdgeTensorType,
+        edge_attr: EdgeAttr,
+    ) -> bool:
+        self.store[self.key(edge_attr)] = edge_index
+        return True
+
+    def _get_edge_index(self, edge_attr: EdgeAttr) -> Optional[EdgeTensorType]:
+        return self.store.get(self.key(edge_attr), None)
+
+    def _remove_edge_index(self, edge_attr: EdgeAttr) -> bool:
+        return self.store.pop(self.key(edge_attr), None) is not None
+
+    def get_all_edge_attrs(self) -> list[EdgeAttr]:
+        return [EdgeAttr(*key) for key in self.store.keys()]
+
+
+class _ProteinFeatureStore(FeatureStore):
+    def __init__(self,
+                store_on_disk_location: Path | str,
+                node_feature_dim: tuple[int, ...],
+                edge_feature_dim: tuple[int, ...],
+                target_feature_dim: tuple[int, ...],
+                read_only: bool = False) -> None:
+        super().__init__()
+        self.store = util.ZarrFeatureStore(store_on_disk_location, read_only)
+        self._read_only = read_only
+        self._default_feature_shapes: dict[str, tuple[int, ...]] = {
+            "x": (0, *node_feature_dim),
+            "y": (0, *target_feature_dim),
+            "edge_attr": (0, *edge_feature_dim),
+        }
+
+        if not self._read_only:
+            existing = self.store.which_tensors
+            for name, shape in self._default_feature_shapes.items():
+                if name in existing:
+                    continue
+                self.store.add_location(TensorAttr(None, name, None), shape)
+
+    @staticmethod
+    def _normalize(T: torch.Tensor | np.ndarray) -> np.ndarray:
+        if isinstance(T, torch.Tensor):
+            data = T.detach().cpu().numpy()
+        else:
+            data = np.asarray(T)
+        return data
+
+    def _is_full_index(self, index: Any) -> bool:
+        return index is None or (isinstance(index, slice) and index == slice(None))
+
+    def _require_attr_name(self, attr: TensorAttr) -> str:
+        if attr.attr_name is None:
+            raise ValueError("TensorAttr.attr_name cannot be None")
+        return attr.attr_name
+
+    def _ensure_location_for_replace(self, attr: TensorAttr, data: np.ndarray) -> None:
+        name = self._require_attr_name(attr)
+        overwrite = name in self.store.which_tensors
+        self.store.add_location(attr, shape=tuple(data.shape), dtype=data.dtype, overwrite=overwrite)
+
+    def _put_tensor(self, tensor: torch.Tensor | np.ndarray, attr: TensorAttr) -> bool:
+        if self._read_only:
+            raise PermissionError("Cannot write to _ProteinFeatureStore opened in read_only mode")
+
+        data = self._normalize(tensor)
+        if data.ndim == 0:
+            data = data.reshape(1)
+
+        name = self._require_attr_name(attr)
+        index = attr.index
+
+        if self._is_full_index(index):
+            self._ensure_location_for_replace(attr, data)
+            self.store.add_data_to_location(data, TensorAttr(attr.group_name, name, slice(None)))
+            return True
+
+        if name not in self.store.which_tensors:
+            raise KeyError(
+                f"Location '{name}' does not exist. Use a full put first, "
+                "or `append_tensor(...)` for streaming growth."
+            )
+        self.store.add_data_to_location(data, attr)
+        return True
+
+    def append_tensor(self, tensor: torch.Tensor | np.ndarray, *args, **kwargs) -> slice:
+        """
+        Append rows to an existing tensor location (or create it if absent).
+        This is the streaming-friendly API for mining-time growth.
+        """
+        if self._read_only:
+            raise PermissionError("Cannot append to _ProteinFeatureStore opened in read_only mode")
+
+        attr = self._tensor_attr_cls.cast(*args, **kwargs)
+        name = self._require_attr_name(attr)
+
+        data = self._normalize(tensor)
+        if data.ndim == 0: # we don't work with scalars: convert () into (1,)
+            data = data.reshape(1)
+
+        if name not in self.store.which_tensors:
+            if data.ndim == 1:
+                init_shape = (0, data.shape[0])
+            else:
+                init_shape = (0, *data.shape[1:])
+            self.store.add_location(TensorAttr(attr.group_name, name, None), init_shape, dtype=data.dtype)
+
+        return self.store.append(data, TensorAttr(attr.group_name, name, None))
+
+    def _get_tensor(self, attr: TensorAttr) -> Optional[torch.Tensor]:
+        name = self._require_attr_name(attr)
+        if name not in self.store.which_tensors:
+            raise KeyError(f"Could not find tensor for '{attr}'")
+        out = self.store.read_data_from_location(attr)
+        return torch.from_numpy(out)
+
+    def _remove_tensor(self, attr: TensorAttr) -> bool:
+        if self._read_only:
+            raise PermissionError("Cannot remove from _ProteinFeatureStore opened in read_only mode")
+
+        name = self._require_attr_name(attr)
+        if name not in self.store.which_tensors:
+            return False
+
+        if self._is_full_index(attr.index):
+            return self.store.drop_location(attr)
+
+        self.store.remove_data_from_location(attr)
+        return True
+
+    def _get_tensor_size(self, attr: TensorAttr) -> Optional[tuple[int, ...]]:
+        name = self._require_attr_name(attr)
+        tensor_meta = self.store.which_tensors.get(name)
+        if tensor_meta is None:
+            return None
+
+        shape, _ = tensor_meta
+        if self._is_full_index(attr.index):
+            return tuple(shape)
+
+        indexed = self.store.read_data_from_location(attr)
+        return tuple(indexed.shape)
+
+    def get_all_tensor_attrs(self) -> list[TensorAttr]:
+        return [TensorAttr(None, name, None) for name in self.store.which_tensors.keys()]
+
+    def close(self) -> None:
+        self.store.close()
+
+
+# OnDisk data interface for GNNs
+class ProteinGraphOnDiskDataset:
+    pass
+
+
+# Data interface for FFNNs (loading batches form disk, so not the whole thing in RAM)
+class ProteinDataset:
+    pass
+
+
+__all__ = [
+
+]
+
+
+if __name__ == "__main__":
+    pass
