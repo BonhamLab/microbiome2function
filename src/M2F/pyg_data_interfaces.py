@@ -583,10 +583,43 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
             split_data.x.size(-1),
             split_data.y.size(-1) if split_data.y.ndim > 1 else 1,
         )
+    
+    def train_loader(self):
+        pass
+
+    def val_loader(self):
+        pass
+
+    def test_loader(self):
+        pass
 
 
-class ProteinGraphOnDisk:
-    pass
+class _ProteinGraphStore(GraphStore):
+
+    def __init__(self, edge_attr_cls = None):
+        super().__init__(edge_attr_cls)
+        self.store: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = dict()
+
+    @staticmethod
+    def key(attr: EdgeAttr) -> tuple:
+        return (attr.edge_type, attr.layout.value, attr.is_sorted, attr.size)
+
+    def _put_edge_index(
+        self,
+        edge_index: EdgeTensorType,
+        edge_attr: EdgeAttr,
+    ) -> bool:
+        self.store[self.key(edge_attr)] = edge_index
+        return True
+
+    def _get_edge_index(self, edge_attr: EdgeAttr) -> Optional[EdgeTensorType]:
+        return self.store.get(self.key(edge_attr), None)
+
+    def _remove_edge_index(self, edge_attr: EdgeAttr) -> bool:
+        return self.store.pop(self.key(edge_attr), None) is not None
+
+    def get_all_edge_attrs(self) -> list[EdgeAttr]:
+        return [EdgeAttr(*key) for key in self.store.keys()]
 
 
 class ProteinDataset:
