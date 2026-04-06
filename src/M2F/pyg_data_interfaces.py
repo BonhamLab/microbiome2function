@@ -31,7 +31,6 @@ from . import util
 from .mining_utils import fetch_uniprotkb_fields
 
 _logger = logging.getLogger(__name__)
-KeyType = tuple[Optional[str], Optional[str]]
 
 @dataclass
 class DatasetInput:
@@ -622,8 +621,137 @@ class _ProteinGraphStore(GraphStore):
         return [EdgeAttr(*key) for key in self.store.keys()]
 
 
-class ProteinDataset:
-    pass
+class _ProteinFeatureStore(FeatureStore):
+    def __init__(self,
+                store_on_disk_location: Path | str,
+                node_feature_dim: tuple[int, ...],
+                edge_feature_dim: tuple[int, ...],
+                target_feature_dim: tuple[int, ...],
+                read_only: bool = False) -> None:
+        super().__init__()
+        self.store = util.ZarrFeatureStore(store_on_disk_location, read_only)
+        self._read_only = read_only
+        self._default_feature_shapes: dict[str, tuple[int, ...]] = {
+            "x": (0, *node_feature_dim),
+            "y": (0, *target_feature_dim),
+            "edge_attr": (0, *edge_feature_dim),
+        }
+
+        if not self._read_only:
+            existing = self.store.which_tensors
+            for name, shape in self._default_feature_shapes.items():
+                if name in existing:
+                    continue
+                self.store.add_location(TensorAttr(None, name, None), shape)
+
+    @staticmethod
+    def _normalize(T: torch.Tensor | np.ndarray) -> np.ndarray:
+        if isinstance(T, torch.Tensor):
+            data = T.detach().cpu().numpy()
+        else:
+            data = np.asarray(T)
+        return data
+
+    def _is_full_index(self, index: Any) -> bool:
+        return index is None or (isinstance(index, slice) and index == slice(None))
+
+    def _require_attr_name(self, attr: TensorAttr) -> str:
+        if attr.attr_name is None:
+            raise ValueError("TensorAttr.attr_name cannot be None")
+        return attr.attr_name
+
+    def _ensure_location_for_replace(self, attr: TensorAttr, data: np.ndarray) -> None:
+        name = self._require_attr_name(attr)
+        overwrite = name in self.store.which_tensors
+        self.store.add_location(attr, shape=tuple(data.shape), dtype=data.dtype, overwrite=overwrite)
+
+    def _put_tensor(self, tensor: torch.Tensor | np.ndarray, attr: TensorAttr) -> bool:
+        if self._read_only:
+            raise PermissionError("Cannot write to _ProteinFeatureStore opened in read_only mode")
+
+        data = self._normalize(tensor)
+        if data.ndim == 0:
+            data = data.reshape(1)
+
+        name = self._require_attr_name(attr)
+        index = attr.index
+
+        if self._is_full_index(index):
+            self._ensure_location_for_replace(attr, data)
+            self.store.add_data_to_location(data, TensorAttr(attr.group_name, name, slice(None)))
+            return True
+
+        if name not in self.store.which_tensors:
+            raise KeyError(
+                f"Location '{name}' does not exist. Use a full put first, "
+                "or `append_tensor(...)` for streaming growth."
+            )
+        self.store.add_data_to_location(data, attr)
+        return True
+
+    def append_tensor(self, tensor: torch.Tensor | np.ndarray, *args, **kwargs) -> slice:
+        """
+        Append rows to an existing tensor location (or create it if absent).
+        This is the streaming-friendly API for mining-time growth.
+        """
+        if self._read_only:
+            raise PermissionError("Cannot append to _ProteinFeatureStore opened in read_only mode")
+
+        attr = self._tensor_attr_cls.cast(*args, **kwargs)
+        name = self._require_attr_name(attr)
+
+        data = self._normalize(tensor)
+        if data.ndim == 0: # we don't work with scalars: convert () into (1,)
+            data = data.reshape(1)
+
+        if name not in self.store.which_tensors:
+            if data.ndim == 1:
+                init_shape = (0, data.shape[0])
+            else:
+                init_shape = (0, *data.shape[1:])
+            self.store.add_location(TensorAttr(attr.group_name, name, None), init_shape, dtype=data.dtype)
+
+        return self.store.append(data, TensorAttr(attr.group_name, name, None))
+
+    def _get_tensor(self, attr: TensorAttr) -> Optional[torch.Tensor]:
+        name = self._require_attr_name(attr)
+        if name not in self.store.which_tensors:
+            raise KeyError(f"Could not find tensor for '{attr}'")
+        out = self.store.read_data_from_location(attr)
+        return torch.from_numpy(out)
+
+    def _remove_tensor(self, attr: TensorAttr) -> bool:
+        if self._read_only:
+            raise PermissionError("Cannot remove from _ProteinFeatureStore opened in read_only mode")
+
+        name = self._require_attr_name(attr)
+        if name not in self.store.which_tensors:
+            return False
+
+        if self._is_full_index(attr.index):
+            return self.store.drop_location(attr)
+
+        self.store.remove_data_from_location(attr)
+        return True
+
+    def _get_tensor_size(self, attr: TensorAttr) -> Optional[tuple[int, ...]]:
+        name = self._require_attr_name(attr)
+        tensor_meta = self.store.which_tensors.get(name)
+        if tensor_meta is None:
+            return None
+
+        shape, _ = tensor_meta
+        if self._is_full_index(attr.index):
+            return tuple(shape)
+
+        indexed = self.store.read_data_from_location(attr)
+        return tuple(indexed.shape)
+
+    def get_all_tensor_attrs(self) -> list[TensorAttr]:
+        return [TensorAttr(None, name, None) for name in self.store.which_tensors.keys()]
+
+    def close(self) -> None:
+        self.store.close()
 
 
 __all__ = [
