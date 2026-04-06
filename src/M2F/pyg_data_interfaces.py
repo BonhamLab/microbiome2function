@@ -3,7 +3,7 @@ from __future__ import annotations
 # third-party
 import torch
 from torch.utils.data.dataset import Dataset
-from torch.utils.data.dataloader import DataLoader
+from torch.utils.data.dataloader import DataLoader as pt_DataLoader
 from torch_geometric.data import \
     (InMemoryDataset, 
     Data,
@@ -12,7 +12,7 @@ from torch_geometric.data import \
     TensorAttr,
     EdgeAttr)
 from torch_geometric.typing import EdgeTensorType, FeatureTensorType
-from torch_geometric.loader import NeighborSampler, NeighborLoader
+from torch_geometric.loader import NeighborSampler, NeighborLoader, DataLoader as pyg_DataLoader
 from torch_geometric.transforms import RandomNodeSplit
 import numpy as np
 import pandas as pd
@@ -583,14 +583,32 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
             split_data.y.size(-1) if split_data.y.ndim > 1 else 1,
         )
     
-    def train_loader(self):
-        pass
+    def train_loader(self, num_neighbors: list[int], batch_size: int, shuffle: bool) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].train_mask,
+            batch_size=batch_size,
+            shuffle=shuffle,
+        )
 
-    def val_loader(self):
-        pass
+    def val_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].val_mask,
+            batch_size=batch_size,
+            shuffle=False,
+        )
 
-    def test_loader(self):
-        pass
+    def test_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].test_mask,
+            batch_size=batch_size,
+            shuffle=False,
+        )
 
 
 class _ProteinGraphStore(GraphStore):
@@ -752,6 +770,59 @@ class _ProteinFeatureStore(FeatureStore):
 
     def close(self) -> None:
         self.store.close()
+
+
+# OnDisk data interface for GNNs
+class ProteinGraphOnDisk:
+    
+    def __init__(self):
+        pass
+
+    @property
+    def raw_file_names(self) -> list[str]:
+        pass
+
+    @property
+    def processed_file_names(self) -> str:
+        pass
+
+    def download(self):
+        pass
+
+    def process(self):
+        pass
+
+    def train_loader(self, num_neighbors: list[int], batch_size: int, shuffle: bool) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].train_mask,
+            batch_size=batch_size,
+            shuffle=shuffle,
+        )
+
+    def val_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].val_mask,
+            batch_size=batch_size,
+            shuffle=False,
+        )
+
+    def test_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        return NeighborLoader(
+            self[0],
+            num_neighbors=num_neighbors,
+            input_nodes=self[0].test_mask,
+            batch_size=batch_size,
+            shuffle=False,
+        )
+
+
+# Data interface for FFNNs (loading batches form disk, so not the whole thing in RAM)
+class ProteinDataset:
+    pass
 
 
 __all__ = [
