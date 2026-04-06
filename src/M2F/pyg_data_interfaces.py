@@ -1,13 +1,25 @@
+from __future__ import annotations
+
 # third-party
-import pandas as pd
 import torch
-import numpy as np
-from torch_geometric.data import InMemoryDataset, Data
+from torch.utils.data.dataset import Dataset
+from torch.utils.data.dataloader import DataLoader
+from torch_geometric.data import \
+    (InMemoryDataset, 
+    Data,
+    FeatureStore,
+    GraphStore,
+    TensorAttr,
+    EdgeAttr)
+from torch_geometric.typing import EdgeTensorType, FeatureTensorType
+from torch_geometric.loader import NeighborSampler, NeighborLoader
 from torch_geometric.transforms import RandomNodeSplit
+import numpy as np
+import pandas as pd
 
 # built-in
 from dataclasses import dataclass, field
-from typing import Iterator, Any
+from typing import Iterator, Any, Optional
 from pathlib import Path
 from math import floor
 import re
@@ -19,7 +31,7 @@ from . import util
 from .mining_utils import fetch_uniprotkb_fields
 
 _logger = logging.getLogger(__name__)
-
+KeyType = tuple[Optional[str], Optional[str]]
 
 @dataclass
 class DatasetInput:
@@ -218,6 +230,7 @@ class DatasetInput:
         return str(*self.Y.values())
 
 
+# In-RAM/VRAM data interface for GNNs
 class ProteinGraphInMemoryDataset(InMemoryDataset):
 
     def __init__(
