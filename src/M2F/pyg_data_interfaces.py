@@ -55,6 +55,7 @@ class DatasetInput:
     request_size: int = 25
     rps: float = 1
     max_retry: int | float = 20
+    num_feature_batches: int | None = None
     edge_dst_column: str = "j"
     edge_attr_columns: list[str] | tuple[str, ...] | None = None
     edge_csv_file_name_pattern: re.Pattern[str] = field(
@@ -116,10 +117,16 @@ class DatasetInput:
             raise ValueError("`rps` must be > 0")
         if self.max_retry < 0:
             raise ValueError("`max_retry` must be >= 0")
+        if self.num_feature_batches is not None:
+            if isinstance(self.num_feature_batches, bool) or not isinstance(self.num_feature_batches, int):
+                raise TypeError("`num_feature_batches` must be int | None")
+            if self.num_feature_batches < 1:
+                raise ValueError("`num_feature_batches` must be >= 1 when provided")
 
         self._validation_ctx["request_size"] = self.request_size
         self._validation_ctx["rps"] = self.rps
         self._validation_ctx["max_retry"] = self.max_retry
+        self._validation_ctx["num_feature_batches"] = self.num_feature_batches
 
     def _validate_accession_ids_csv_file(self) -> None:
         if not self.path_to_accession_ids_csv_file.exists():
