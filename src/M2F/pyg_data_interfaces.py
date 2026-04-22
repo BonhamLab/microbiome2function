@@ -33,6 +33,42 @@ from .mining_utils import fetch_uniprotkb_fields
 _logger = logging.getLogger(__name__)
 
 
+def _to_numeric_vector(
+    value: Any,
+    *,
+    field_name: str,
+    cast_float: bool = True,
+) -> np.ndarray:
+    if torch.is_tensor(value):
+        arr = value.detach().cpu().numpy()
+    elif isinstance(value, np.ndarray):
+        arr = value
+    elif isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            raise ValueError(f"Empty value for field '{field_name}'")
+        arr = np.asarray(value)
+    elif isinstance(value, (int, float, np.number, bool)):
+        arr = np.asarray([value])
+    else:
+        raise TypeError(
+            f"Field '{field_name}' has unsupported type {type(value)}. "
+            "Apply a pre_transform that converts it to numeric arrays."
+        )
+
+    if arr.ndim == 0:
+        arr = arr.reshape(1)
+
+    arr = arr.reshape(-1)
+    if cast_float:
+        try:
+            arr = arr.astype(np.float32)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"Field '{field_name}' could not be converted to float32."
+            ) from exc
+    return arr
+
+
 @dataclass
 class DatasetInput:
     """
