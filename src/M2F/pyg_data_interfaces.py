@@ -273,6 +273,235 @@ class DatasetInput:
         return str(*self.Y.values())
 
 
+def build_topology_from_DatasetInput(
+        id_map: np.ndarray,
+        csv_dir: Path | str,
+        edge_csv_file_name_pattern: re.Pattern,
+        edge_attr_columns: list[str] | tuple[str, ...] | None,
+        chunk_name_pattern: re.Pattern,
+        edge_dst_column: str
+        ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    # ------------------ accumulator / helper vars ------------------
+    edge_src: list[np.ndarray] = []
+    edge_dst: list[np.ndarray] = []
+    edge_attr_blocks: list[np.ndarray] = []
+    edge_paths = [
+        Path(p)
+        for p in util.files_from(str(csv_dir), edge_csv_file_name_pattern)
+    ]
+    # ----------------------------------------------------------------
+
+    # --------- get configured edge attrs or infer from files --------
+    if edge_attr_columns is not None:
+        edge_attr_cols = list(edge_attr_columns)
+    else:
+        edge_attr_cols = []
+        for edge_path in edge_paths:
+            header_cols = pd.read_csv(edge_path, nrows=0).columns.tolist()
+            for col in header_cols:
+                # inferred from all non-dst columns
+                if col != edge_dst_column and col not in edge_attr_cols:
+                    edge_attr_cols.append(col)
+    # ----------------------------------------------------------------
+
+    # --- process individual edge sets pruning out filtered nodes ----
+    for edge_path in edge_paths:
+        match = chunk_name_pattern.match(edge_path.name)
+        if not match:
+            continue
+
+        src_old = int(match.group(1)) - 1 # make the src 0-indexed
+        if src_old < 0 or src_old >= id_map.shape[0]:
+            continue
+        src_new = id_map[src_old] # get the new index
+        
+        if src_new < 0: # this node was dropped then, so move on
+            continue
+
+        edge_df = pd.read_csv(edge_path) # read the destinations
+        if edge_df.empty:
+            continue
+
+        if edge_dst_column not in edge_df.columns:
+            raise ValueError(
+                f"Edge file {edge_path} is missing '{edge_dst_column}'"
+            )
+        
+        # make the dst 0-indexed
+        dst_old = edge_df[edge_dst_column].to_numpy(dtype=np.int64) - 1
+
+        in_bounds = (dst_old >= 0) & (dst_old < id_map.shape[0])
+        if not in_bounds.any():
+            continue
+
+        # initialize dst_mapped with -1 everywhere
+        dst_mapped = np.full(dst_old.shape, -1, dtype=np.int64)
+        # for in-bounds destinations, assign id_map[dst_old] (new id or -1)
+        dst_mapped[in_bounds] = id_map[dst_old[in_bounds]]
+        # keep only those where dst is mapped (that is, dst node was kept)
+        keep_edges = dst_mapped >= 0 # use it throw away -1 entries down the road
+        if not keep_edges.any():
+            continue
+        # src_arr is just [src_new, src_new, ..., src_new] repeated once per kept edge
+        src_arr = np.full(keep_edges.sum(), src_new, dtype=np.int64) # note keep_edges is a binary array
+        dst_arr = dst_mapped[keep_edges] # is the mapped destination ids
+
+        if edge_attr_cols:
+            # Reindex allows missing columns in some chunks; missing attrs become 0.0.
+            # reindex(columns=edge_attr_cols) ensures the attribute matrix has exactly those columns in that order
+            attr_df = edge_df.reindex(columns=edge_attr_cols)
+            attr_np = attr_df.apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(
+                dtype=np.float32
+            ) # to_numeric(errors="coerce") converts strings to numbers; non-convertible becomes NaN
+            attr_arr = attr_np[keep_edges] # keep attributes only for the kept edges
+        else:
+            attr_arr = np.empty((keep_edges.sum(), 0), dtype=np.float32) # (E, 0) -- if no attrs
+
+        # source files represent upper triangle; add reverse edges for full message passing
+        edge_src.append(src_arr)
+        edge_dst.append(dst_arr)
+        edge_attr_blocks.append(attr_arr)
+        edge_src.append(dst_arr)
+        edge_dst.append(src_arr)
+        edge_attr_blocks.append(attr_arr)
+    # ----------------------------------------------------------------
+
+    # ---- collate the edge attrs and index and convert to torch -----
+    if edge_src:
+        edge_index_np = np.vstack([np.concatenate(edge_src), np.concatenate(edge_dst)])
+        edge_attr_np = np.concatenate(edge_attr_blocks, axis=0)
+    else:
+        edge_index_np = np.empty((2, 0), dtype=np.int64)
+        edge_attr_np = np.empty((0, len(edge_attr_cols)), dtype=np.float32)
+    
+    return edge_index_np, edge_attr_np, tuple(edge_attr_cols)
+    # ----------------------------------------------------------------
+
+
+def build_features_from_DatasetInput(
+        pre_transform,
+        pre_filter,
+        accessions_path: Path | str,
+        features_path: Path | str,
+        required_cols: list[str],
+        global_id_map: np.ndarray,
+        X_return_field_names: list[str] | tuple[str, ...],
+        Y_return_field_name: str) -> tuple[np.ndarray, np.ndarray]:
+    # ------------------------ read the data -------------------------
+    accessions_df = pd.read_csv(accessions_path)
+    features_df = pd.read_csv(features_path)
+    # ----------------------------------------------------------------
+
+    # ------------- align features with graph node order -------------
+    if "Entry" not in features_df.columns:
+        raise KeyError(
+            f"{features_path} is missing merge key 'Entry'. "
+            "UniProt fetch likely returned no usable schema."
+        )
+    features_df = features_df.copy()
+    features_df["Entry"] = features_df["Entry"].astype(str).str.strip()
+    dup_mask = features_df["Entry"].duplicated(keep=False)
+    if dup_mask.any():
+        duplicate_entries = sorted(features_df.loc[dup_mask, "Entry"].unique().tolist())
+        preview = duplicate_entries[:10]
+        raise ValueError(
+            "Feature shard contains duplicate 'Entry' values; each accession "
+            "must appear at most once per shard. "
+            f"Found {len(duplicate_entries)} duplicated accession(s). "
+            f"Examples: {preview}"
+        )
+
+    index_df = accessions_df.copy()
+    index_df["Entry"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
+    index_df["_orig_node_id"] = index_df["i"].astype(np.int64) - 1
+    node_df = index_df.merge(features_df, on="Entry", how="left", sort=False)
+    # ----------------------------------------------------------------
+
+    # ---------------------- transform the table ---------------------
+    if pre_transform is not None:
+        transformed = pre_transform(node_df)
+        if not isinstance(transformed, pd.DataFrame):
+            raise TypeError("`pre_transform` must return a pandas DataFrame in this interface")
+        node_df = transformed
+    # ----------------------------------------------------------------
+
+    # --------------------- create the keep_mask ---------------------
+    keep_mask = ~node_df["Entry"].astype(str).str.startswith(("UNK", "UPI"))
+    if pre_filter is not None:
+        filtered = pre_filter(node_df)
+        if not isinstance(filtered, (pd.Series, np.ndarray, list, tuple)):
+            raise TypeError("`pre_filter` must return a boolean mask for the node table")
+        filtered = pd.Series(filtered, index=node_df.index)
+        if filtered.shape[0] != node_df.shape[0]:
+            raise ValueError("`pre_filter` mask length does not match number of nodes")
+        keep_mask &= filtered.astype(bool)
+    # ----------------------------------------------------------------
+
+    # --------- always require non-missing supervised fields ---------
+    missing_required = [col for col in required_cols if col not in node_df.columns]
+    if missing_required:
+        raise KeyError(f"Required columns missing after transform: {missing_required}")
+
+    keep_mask &= ~node_df.loc[:, required_cols].isna().any(axis=1)
+    node_df = node_df[keep_mask].copy()
+    # ----------------------------------------------------------------
+
+    if node_df.empty:
+        return (
+            np.empty((0, 0), dtype=np.float32),
+            np.empty((0, 0), dtype=np.float32),
+        )
+
+    # --- update old->new global node id map (in-place) --------------
+    old_ids = node_df["_orig_node_id"].to_numpy(dtype=np.int64)
+    if old_ids.min() < 0 or old_ids.max() >= global_id_map.shape[0]:
+        raise ValueError("Encountered node ids outside `global_id_map` bounds")
+
+    if np.any(global_id_map[old_ids] >= 0):
+        dup = old_ids[global_id_map[old_ids] >= 0][:5].tolist()
+        raise ValueError(
+            "Some old node ids were already assigned in `global_id_map`. "
+            f"Example duplicates: {dup}"
+        )
+
+    next_new_id = int(global_id_map.max()) + 1 if global_id_map.size else 0
+    new_ids = np.arange(next_new_id, next_new_id + old_ids.shape[0], dtype=np.int64)
+    global_id_map[old_ids] = new_ids
+    # ----------------------------------------------------------------
+
+    # ------------------------ build X and Y -------------------------
+    x_cols = [c for c in X_return_field_names if c != "Entry"]
+    y_col = Y_return_field_name
+
+    x_rows: list[np.ndarray] = []
+    for vals in node_df[x_cols].itertuples(index=False, name=None):
+        parts = [_to_numeric_vector(v, field_name=c, cast_float=True) for c, v in zip(x_cols, vals)]
+        x_rows.append(np.concatenate(parts, axis=0))
+
+    y_rows: list[np.ndarray] = []
+    for v in node_df[y_col]:
+        y_rows.append(_to_numeric_vector(v, field_name=y_col, cast_float=True))
+
+    if x_rows:
+        x_dim = x_rows[0].shape[0]
+        if any(row.shape[0] != x_dim for row in x_rows):
+            raise ValueError("X feature dimensionality is not consistent across rows")
+        x = np.vstack(x_rows).astype(np.float32, copy=False)
+    else:
+        x = np.empty((0, 0), dtype=np.float32)
+
+    if y_rows:
+        y_dim = y_rows[0].shape[0]
+        if any(row.shape[0] != y_dim for row in y_rows):
+            raise ValueError("Y dimensionality is not consistent across rows")
+        y = np.vstack(y_rows).astype(np.float32, copy=False)
+    else:
+        y = np.empty((0, 0), dtype=np.float32)
+
+    return x, y
+    # ----------------------------------------------------------------
+
+
 # In-RAM/VRAM data interface for GNNs
 class ProteinGraphInMemoryDataset(InMemoryDataset):
 
