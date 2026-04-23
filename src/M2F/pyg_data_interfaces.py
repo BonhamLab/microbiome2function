@@ -593,242 +593,79 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
 
     @staticmethod
     def _to_tensor(value: Any, *, field_name: str, cast_float: bool = True) -> torch.Tensor:
-        if torch.is_tensor(value):
-            tensor = value.detach().cpu()
-        elif isinstance(value, np.ndarray):
-            tensor = torch.from_numpy(value)
-        elif isinstance(value, (list, tuple)):
-            if len(value) == 0:
-                raise ValueError(f"Empty value for field '{field_name}'")
-            tensor = torch.tensor(value)
-        elif isinstance(value, (int, float, np.number, bool)):
-            tensor = torch.tensor([value])
-        else:
-            raise TypeError(
-                f"Field '{field_name}' has unsupported type {type(value)}. "
-                "Apply a pre_transform that converts it to numeric tensors."
-            )
-        if tensor.ndim == 0:
-            tensor = tensor.unsqueeze(0)
-        tensor = tensor.flatten()
-        return tensor.float() if cast_float else tensor
+        arr = _to_numeric_vector(value, field_name=field_name, cast_float=cast_float)
+        return torch.from_numpy(arr)
 
     def process(self) -> None:
         # ------------------------- get the paths ------------------------
         raw_dir = Path(self.raw_dir)
         features_path = raw_dir / "features.csv"
-        index_path = raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
-        # ----------------------------------------------------------------
-
-        # --------------------------- fail fast --------------------------
+        accessions_path = raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
         if not features_path.exists():
             raise FileNotFoundError(f"Expected raw features at {features_path}")
-        if not index_path.exists():
-            raise FileNotFoundError(f"Expected accession index at {index_path}")
+        if not accessions_path.exists():
+            raise FileNotFoundError(f"Expected accession index at {accessions_path}")
         # ----------------------------------------------------------------
 
-        # ------------------------ read the data -------------------------
-        index_df = pd.read_csv(index_path)
-        features_df = pd.read_csv(features_path)
-        # ----------------------------------------------------------------
+        # ---------------------------- features --------------------------
+        accessions_df = pd.read_csv(accessions_path)
+        max_old_id = int(accessions_df["i"].max()) - 1
+        id_map = np.full(max_old_id + 1, -1, dtype=np.int64)
 
-        # ------------- align features with graph node order -------------
-        if "Entry" not in features_df.columns:
-            raise KeyError(
-                    "features.csv is missing merge key 'Entry'. "
-                    "UniProt fetch likely returned no usable schema."
-                )
-
-        index_df = index_df.copy()
-        index_df["Entry"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
-        index_df["_orig_node_id"] = index_df["i"].astype(np.int64) - 1
-
-        # align node table to graph index order:
-        # keep every node from index_df (left side), preserving its row order
-        # join feature rows by accession; unmatched accessions get NaN features
-        # filtering of invalid/missing nodes happens later (after transform/filter logic)
-        node_df = index_df.merge(features_df, on="Entry", how="left", sort=False) # BASICALLY INDEX THE FEATURES
-        # ----------------------------------------------------------------
-
-        # 1) transform (dataset/table level)
-
-        # ---------------------- transform the table ---------------------
-        if self.pre_transform is not None:
-            transformed = self.pre_transform(node_df)
-            if not isinstance(transformed, pd.DataFrame):
-                raise TypeError("`pre_transform` must return a pandas DataFrame in this interface")
-            node_df = transformed
-        # ----------------------------------------------------------------
-
-        # 2) filter (dataset/table level)
-        
-        # --------------------- create the keep_mask ---------------------
-        keep_mask = ~node_df["Entry"].astype(str).str.startswith(("UNK", "UPI")) # throw away the UNK & UPI prefixed entries
-        if self.pre_filter is not None:
-            filtered = self.pre_filter(node_df)
-            if not isinstance(filtered, (pd.Series, np.ndarray, list, tuple)):
-                raise TypeError("`pre_filter` must return a boolean mask for the node table")
-            filtered = pd.Series(filtered, index=node_df.index)
-            if filtered.shape[0] != node_df.shape[0]:
-                raise ValueError("`pre_filter` mask length does not match number of nodes")
-            keep_mask &= filtered.astype(bool)
-        # ----------------------------------------------------------------
-
-        # --------- always require non-missing supervised fields ---------
         required_cols = [self.dataset_input.Y_return_field_name, *self.dataset_input.X_return_field_names]
-        missing_required = [col for col in required_cols if col not in node_df.columns]
-        if missing_required:
-            raise KeyError(f"Required columns missing after transform: {missing_required}")
-        # ----------------------------------------------------------------
+        x_np, y_np = build_features_from_DatasetInput(
+            pre_transform=self.pre_transform,
+            pre_filter=self.pre_filter,
+            accessions_path=accessions_path,
+            features_path=features_path,
+            required_cols=required_cols,
+            global_id_map=id_map,
+            X_return_field_names=self.dataset_input.X_return_field_names,
+            Y_return_field_name=self.dataset_input.Y_return_field_name
+        )
 
-        # ------------------- expand and apply the mask ------------------
-        # V V V what this does is it AND-combines the current keep mask
-        # with "consider all rows and all required columns, then compute
-        # True/False for each entry it that table based on isna, then collapse
-        # all the columns within each row (note axis=1) to get a 1-D Series
-        # where True values denote entries with no missing values."
-        keep_mask &= ~node_df.loc[:, required_cols].isna().any(axis=1)
-        node_df = node_df[keep_mask].copy()
-        if node_df.empty:
+        if x_np.shape[0] == 0:
             raise ValueError("All nodes were filtered out; cannot build dataset")
+
+        x = torch.from_numpy(x_np).float()
+        y = torch.from_numpy(y_np).float()
         # ----------------------------------------------------------------
 
-        # --- build old->new node id map for edge filtering/reindexing ---
-        max_old_id = int(index_df["_orig_node_id"].max())
-        id_map = -np.ones(max_old_id + 1, dtype=np.int64)
-        old_ids = node_df["_orig_node_id"].to_numpy(dtype=np.int64)
-        new_ids = np.arange(node_df.shape[0], dtype=np.int64)
-        id_map[old_ids] = new_ids # @ old ids write new ids
-        # ^ ^ ^ -- for example: Original graph node ids (_orig_node_id): 0,1,2,3,4,5
-        # After filtering, kept nodes are old ids: 1,4,5. So node_df has 3 rows (new ids will be 0,1,2).
-        # max_old_id = 5, id_map = [-1, -1, -1, -1, -1, -1], old_ids = [1, 4, 5]
-        # new_ids = [0, 1, 2]
-        # id_map = [-1, 0, -1, -1, 1, 2] (due to id_map[old_ids] = new_ids)
-        # ----------------------------------------------------------------
+        # ------------------------------ edges ---------------------------
+        chunk_name_pattern = self.dataset_input.edge_csv_file_name_pattern
+        if chunk_name_pattern.groups < 1:
+            chunk_name_pattern = re.compile(r"chunk_(\d+)\.csv$")
 
-        # ------------- build X from configured input fields -------------
-        x_rows = []
-        x_cols = [c for c in self.dataset_input.X_return_field_names if c != "Entry"]
-        for vals in node_df[x_cols].itertuples(index=False, name=None):
-            parts = [self._to_tensor(v, field_name=c, cast_float=True) for c, v in zip(x_cols, vals)]
-            x_rows.append(torch.cat(parts, dim=0))
-        x = torch.stack(x_rows, dim=0)
-        # ----------------------------------------------------------------
-
-        # ------------- build Y from configured target field -------------
-        y_rows = []
-        y_col = self.dataset_input.Y_return_field_name
-        for v in node_df[self.dataset_input.Y_return_field_name]:
-            y_rows.append(self._to_tensor(v, field_name=y_col, cast_float=True))
-        y = torch.stack(y_rows, dim=0)
-        # ----------------------------------------------------------------
-
-        # 3) construct edge_index/edge_attr
-
-        # ------------------ accumulator / helper vars ------------------
-        edge_src: list[np.ndarray] = []
-        edge_dst: list[np.ndarray] = []
-        edge_attr_blocks: list[np.ndarray] = []
-        chunk_name_pattern = re.compile(r"chunk_(\d+)\.csv$")
-        edge_paths = [
-            Path(p)
-            for p in util.files_from(str(raw_dir), self.dataset_input.edge_csv_file_name_pattern)
-        ]
-        # ----------------------------------------------------------------
-
-        # --------- get configured edge attrs or infer from files --------
-        if self.dataset_input.edge_attr_columns is not None:
-            edge_attr_cols = list(self.dataset_input.edge_attr_columns)
-        else:
-            edge_attr_cols = []
-            for edge_path in edge_paths:
-                header_cols = pd.read_csv(edge_path, nrows=0).columns.tolist()
-                for col in header_cols:
-                    # inferred from all non-dst columns
-                    if col != self.dataset_input.edge_dst_column and col not in edge_attr_cols:
-                        edge_attr_cols.append(col)
-        # ----------------------------------------------------------------
-
-        # --- process individual edge sets pruning out filtered nodes ----
-        for edge_path in edge_paths:
-            match = chunk_name_pattern.match(edge_path.name)
-            if not match:
-                continue
-
-            src_old = int(match.group(1)) - 1 # make the src 0-indexed
-            if src_old < 0 or src_old >= id_map.shape[0]:
-                continue
-            src_new = id_map[src_old] # get the new index
-            
-            if src_new < 0: # this node was dropped then, so move on
-                continue
-
-            edge_df = pd.read_csv(edge_path) # read the destinations
-            if edge_df.empty:
-                continue
-
-            if self.dataset_input.edge_dst_column not in edge_df.columns:
-                raise ValueError(
-                    f"Edge file {edge_path} is missing '{self.dataset_input.edge_dst_column}'"
-                )
-            
-            # make the dst 0-indexed
-            dst_old = edge_df[self.dataset_input.edge_dst_column].to_numpy(dtype=np.int64) - 1
-
-            in_bounds = (dst_old >= 0) & (dst_old < id_map.shape[0])
-            if not in_bounds.any():
-                continue
-
-            # initialize dst_mapped with -1 everywhere
-            dst_mapped = np.full(dst_old.shape, -1, dtype=np.int64)
-            # for in-bounds destinations, assign id_map[dst_old] (new id or -1)
-            dst_mapped[in_bounds] = id_map[dst_old[in_bounds]]
-            # keep only those where dst is mapped (that is, dst node was kept)
-            keep_edges = dst_mapped >= 0 # use it throw away -1 entries down the road
-            if not keep_edges.any():
-                continue
-            # src_arr is just [src_new, src_new, ..., src_new] repeated once per kept edge
-            src_arr = np.full(keep_edges.sum(), src_new, dtype=np.int64) # note keep_edges is a binary array
-            dst_arr = dst_mapped[keep_edges] # is the mapped destination ids
-
-            if edge_attr_cols:
-                # Reindex allows missing columns in some chunks; missing attrs become 0.0.
-                # reindex(columns=edge_attr_cols) ensures the attribute matrix has exactly those columns in that order
-                attr_df = edge_df.reindex(columns=edge_attr_cols)
-                attr_np = attr_df.apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(
-                    dtype=np.float32
-                ) # to_numeric(errors="coerce") converts strings to numbers; non-convertible becomes NaN
-                attr_arr = attr_np[keep_edges] # keep attributes only for the kept edges
-            else:
-                attr_arr = np.empty((keep_edges.sum(), 0), dtype=np.float32) # (E, 0) -- if no attrs
-
-            # source files represent upper triangle; add reverse edges for full message passing
-            edge_src.append(src_arr)
-            edge_dst.append(dst_arr)
-            edge_attr_blocks.append(attr_arr)
-            edge_src.append(dst_arr)
-            edge_dst.append(src_arr)
-            edge_attr_blocks.append(attr_arr)
-        # ----------------------------------------------------------------
-
-        # ---- collate the edge attrs and index and convert to torch -----
-        if edge_src:
-            edge_index_np = np.vstack([np.concatenate(edge_src), np.concatenate(edge_dst)])
-            edge_attr_np = np.concatenate(edge_attr_blocks, axis=0)
-        else:
-            edge_index_np = np.empty((2, 0), dtype=np.int64)
-            edge_attr_np = np.empty((0, len(edge_attr_cols)), dtype=np.float32)
-
+        edge_index_np, edge_attr_np, edge_attr_cols = build_topology_from_DatasetInput(
+            id_map=id_map,
+            csv_dir=raw_dir,
+            edge_csv_file_name_pattern=self.dataset_input.edge_csv_file_name_pattern,
+            edge_attr_columns=self.dataset_input.edge_attr_columns,
+            chunk_name_pattern=chunk_name_pattern,
+            edge_dst_column=self.dataset_input.edge_dst_column,
+        )
         edge_index = torch.from_numpy(edge_index_np).long()
         edge_attr = torch.from_numpy(edge_attr_np).float()
         # ----------------------------------------------------------------
 
-        # 4) store everything
+        node_id_to_accession: dict[int, str] = {}
+        for row in accessions_df.itertuples(index=False):
+            old_id = int(row.i) - 1
+            if old_id < 0 or old_id >= id_map.shape[0]:
+                continue
+            new_id = int(id_map[old_id])
+            if new_id < 0:
+                continue
+            node_id_to_accession[new_id] = str(row.uniref).replace("UniRef90_", "", 1)
+
+        if len(node_id_to_accession) != x.size(0):
+            raise RuntimeError(
+                "Node metadata mapping size mismatch after filtering/reindexing: "
+                f"{len(node_id_to_accession)} mapped nodes vs {x.size(0)} feature rows."
+            )
 
         data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
-        data.node_id_to_accession = {
-            int(i): acc for i, acc in enumerate(node_df["Entry"].astype(str).tolist())
-        }
+        data.node_id_to_accession = dict(sorted(node_id_to_accession.items()))
         data.x_fields = [i for i in self.dataset_input.X_return_field_names if i != "Entry"]
         data.y_field = self.dataset_input.Y_return_field_name
         data.edge_attr_fields = tuple(edge_attr_cols)
