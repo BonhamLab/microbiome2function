@@ -890,7 +890,431 @@ class _ProteinFeatureStore(FeatureStore):
 
 # OnDisk data interface for GNNs
 class ProteinGraphOnDiskDataset:
-    pass
+
+    def __init__(
+        self,
+        root: str | Path,
+        dataset_input: DatasetInput,
+        transform=None,
+        pre_transform=None,
+        pre_filter=None,
+        log: bool = True,
+        force_reload: bool = False,
+        *,
+        val_set_size: float = 0.1,
+        test_set_size: float = 0.1
+    ) -> None:
+        self.root = Path(root)
+        self.dataset_input = dataset_input
+        self.dataset_input.validate()
+
+        if ((val_set_size + test_set_size) >= 1.0
+            or val_set_size < 0.0
+            or test_set_size < 0.0):
+            raise ValueError()
+
+        self.transform = transform
+        self.pre_transform = pre_transform
+        self.pre_filter = pre_filter
+        self.log = log
+        self.force_reload = force_reload
+        self.val_set_size = val_set_size
+        self.test_set_size = test_set_size
+
+        self.feature_store: _ProteinFeatureStore | None = None
+        self.graph_store: _ProteinGraphStore | None = None
+        self.id_map: np.ndarray | None = None
+        self.train_node_ids: torch.Tensor | None = None
+        self.val_node_ids: torch.Tensor | None = None
+        self.test_node_ids: torch.Tensor | None = None
+        self.meta: dict[str, Any] = {}
+
+        if self.force_reload:
+            if self.features_batches_dir.exists():
+                shutil.rmtree(self.features_batches_dir)
+            if self.processed_dir.exists():
+                shutil.rmtree(self.processed_dir)
+
+        if not self._raw_ready():
+            self.download()
+
+        if self.force_reload or not self._processed_ready():
+            self.process()
+
+        self._load_processed()
+
+    @property
+    def original_node_accessions(self):
+        return [
+            str(row.uniref).replace("UniRef90_", "", 1)
+            for row in self.dataset_input.accession_ids.itertuples(index=False)
+            if not str(row.uniref).startswith(("UniRef90_UNK", "UniRef90_UPI"))
+        ]
+
+    @property
+    def raw_file_names(self) -> list[str]:
+        feature_batch_files = [f"features_{i}.csv" for i in range(1, self.num_feature_batches + 1)]
+        return [
+            self.dataset_input.path_to_accession_ids_csv_file.name,
+            *[path.name for path in self.dataset_input.edge_csv_paths],
+            *[str(Path("features_batches") / name) for name in feature_batch_files],
+        ]
+
+    @property
+    def processed_file_names(self) -> list[str]:
+        return [
+            "feature_store/zarr.json",
+            "edge_index.npy",
+            "id_map.npy",
+            "meta.pt"
+        ]
+
+    @property
+    def raw_dir(self) -> Path:
+        return self.root / "raw"
+
+    @property
+    def processed_dir(self) -> Path:
+        return self.root / "processed"
+
+    @property
+    def features_batches_dir(self) -> Path:
+        return self.raw_dir / "features_batches"
+
+    @property
+    def feature_store_dir(self) -> Path:
+        return self.processed_dir / "feature_store"
+
+    @property
+    def edge_index_path(self) -> Path:
+        return self.processed_dir / "edge_index.npy"
+
+    @property
+    def id_map_path(self) -> Path:
+        return self.processed_dir / "id_map.npy"
+
+    @property
+    def meta_path(self) -> Path:
+        return self.processed_dir / "meta.pt"
+
+    @property
+    def num_feature_batches(self) -> int:
+        requested = self.dataset_input.num_feature_batches or 1
+        total_ids = max(1, len(self.original_node_accessions))
+        return min(requested, total_ids)
+
+    def _feature_batch_path(self, batch_id_1based: int) -> Path:
+        return self.features_batches_dir / f"features_{batch_id_1based}.csv"
+
+    def _raw_ready(self) -> bool:
+        if not self.raw_dir.exists():
+            return False
+
+        expected = [self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name]
+        expected.extend([self.raw_dir / path.name for path in self.dataset_input.edge_csv_paths])
+        expected.extend([self._feature_batch_path(i) for i in range(1, self.num_feature_batches + 1)])
+        return all(path.exists() for path in expected)
+
+    def _processed_ready(self) -> bool:
+        expected = [self.processed_dir / name for name in self.processed_file_names]
+        return all(path.exists() for path in expected)
+
+    def _load_processed(self) -> None:
+        meta = torch.load(self.meta_path, weights_only=False)
+        self.meta = meta
+
+        x_dim = int(meta["x_dim"])
+        y_dim = int(meta["y_dim"])
+        edge_attr_dim = int(meta["edge_attr_dim"])
+
+        self.feature_store = _ProteinFeatureStore(
+            store_on_disk_location=self.feature_store_dir,
+            node_feature_dim=(x_dim,),
+            edge_feature_dim=(edge_attr_dim,),
+            target_feature_dim=(y_dim,),
+            read_only=True
+        )
+
+        edge_index_np = np.load(self.edge_index_path)
+        row = torch.from_numpy(edge_index_np[0]).long()
+        col = torch.from_numpy(edge_index_np[1]).long()
+        num_nodes = int(meta["num_nodes"])
+        self.graph_store = _ProteinGraphStore()
+        self.graph_store.put_edge_index(
+            (row, col),
+            edge_type=None,
+            layout="coo",
+            is_sorted=False,
+            size=(num_nodes, num_nodes),
+        )
+
+        self.id_map = np.load(self.id_map_path)
+        self.train_node_ids = torch.as_tensor(meta["train_node_ids"]).long()
+        self.val_node_ids = torch.as_tensor(meta["val_node_ids"]).long()
+        self.test_node_ids = torch.as_tensor(meta["test_node_ids"]).long()
+
+    @staticmethod
+    def _materialize(src: Path, dst: Path) -> None:
+        if dst.exists():
+            return
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dst.symlink_to(src.resolve())
+        except OSError:
+            shutil.copy2(src, dst)
+
+    def download(self) -> None:
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.features_batches_dir.mkdir(parents=True, exist_ok=True)
+
+        # Materialize index + edge files into raw/
+        self._materialize(
+            self.dataset_input.path_to_accession_ids_csv_file,
+            self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name,
+        )
+        for edge_path in self.dataset_input.edge_csv_paths:
+            self._materialize(edge_path, self.raw_dir / edge_path.name)
+
+        accessions = self.original_node_accessions
+        if len(accessions) == 0:
+            raise ValueError(
+                "No valid UniRef accessions to query after removing UNK/UPI entries."
+            )
+        batches = np.array_split(np.asarray(accessions, dtype=object), self.num_feature_batches)
+        fields = [self.dataset_input.Y_query_field_name, *self.dataset_input.X_query_field_names]
+
+        for i, batch in enumerate(batches, start=1):
+            batch_path = self._feature_batch_path(i)
+            if batch_path.exists():
+                continue
+
+            batch_ids = [str(x) for x in batch.tolist()]
+            if len(batch_ids) == 0:
+                pd.DataFrame(columns=fields).to_csv(batch_path, index=False)
+                continue
+            features_df = fetch_uniprotkb_fields(
+                uniref_ids=batch_ids,
+                fields=fields,
+                request_size=self.dataset_input.request_size,
+                rps=self.dataset_input.rps,
+                max_retry=self.dataset_input.max_retry,
+            )
+            features_df.to_csv(batch_path, index=False)
+
+    @staticmethod
+    def _to_tensor(value: Any, *, field_name: str, cast_float: bool = True) -> torch.Tensor:
+        arr = _to_numeric_vector(value, field_name=field_name, cast_float=cast_float)
+        return torch.from_numpy(arr)
+
+    def _attach_edge_attr(self, batch: Data) -> Data:
+        if self.feature_store is None:
+            raise RuntimeError("Feature store is not initialized")
+        if "e_id" in batch:
+            edge_attr = self.feature_store.get_tensor(
+                TensorAttr(None, "edge_attr", batch.e_id.detach().cpu())
+            )
+            batch.edge_attr = edge_attr.float()
+        else:
+            batch.edge_attr = torch.empty((batch.edge_index.size(1), 0), dtype=torch.float32)
+        return batch
+
+    def process(self) -> None:
+        # ------------------------- get the paths ------------------------
+        accessions_path = self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
+        if not accessions_path.exists():
+            raise FileNotFoundError(f"Expected accession index at {accessions_path}")
+        for i in range(1, self.num_feature_batches + 1):
+            batch_path = self._feature_batch_path(i)
+            if not batch_path.exists():
+                raise FileNotFoundError(f"Expected raw feature batch at {batch_path}")
+        # ----------------------------------------------------------------
+
+        # If the dataset was already loaded in read mode, release the handle
+        # before rebuilding the processed artifacts
+        self.close()
+        if self.processed_dir.exists():
+            shutil.rmtree(self.processed_dir) # ensures no stale state mixes with new processing
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.feature_store_dir.mkdir(parents=True, exist_ok=True)
+
+        accessions_df = pd.read_csv(accessions_path)
+        max_old_id = int(accessions_df["i"].max()) - 1
+        id_map = np.full(max_old_id + 1, -1, dtype=np.int64)
+
+        required_cols = [self.dataset_input.Y_return_field_name, *self.dataset_input.X_return_field_names]
+
+        feature_store: _ProteinFeatureStore | None = None
+        total_rows = 0
+        try:
+            # ---------------------- pass 1: node features -------------------
+            for i in range(1, self.num_feature_batches + 1):
+                batch_path = self._feature_batch_path(i)
+                x_np, y_np = build_features_from_DatasetInput(
+                    pre_transform=self.pre_transform,
+                    pre_filter=self.pre_filter,
+                    accessions_path=accessions_path,
+                    features_path=batch_path,
+                    required_cols=required_cols,
+                    global_id_map=id_map,
+                    X_return_field_names=self.dataset_input.X_return_field_names,
+                    Y_return_field_name=self.dataset_input.Y_return_field_name,
+                )
+
+                if x_np.shape[0] == 0:
+                    continue
+
+                if feature_store is None:
+                    feature_store = _ProteinFeatureStore(
+                        store_on_disk_location=self.feature_store_dir,
+                        node_feature_dim=(x_np.shape[1],),
+                        edge_feature_dim=(0,),  # rewritten after topology construction
+                        target_feature_dim=(y_np.shape[1],),
+                        read_only=False,
+                    )
+                else:
+                    if x_np.shape[1] != int(feature_store.store.which_tensors["x"][0][1]):
+                        raise ValueError("Inconsistent X feature dimensionality across feature batches")
+                    if y_np.shape[1] != int(feature_store.store.which_tensors["y"][0][1]):
+                        raise ValueError("Inconsistent Y dimensionality across feature batches")
+
+                feature_store.append_tensor(x_np, group_name=None, attr_name="x", index=None)
+                feature_store.append_tensor(y_np, group_name=None, attr_name="y", index=None)
+                total_rows += int(x_np.shape[0])
+            # ----------------------------------------------------------------
+
+            if feature_store is None or total_rows == 0:
+                raise ValueError("All nodes were filtered out; cannot build on-disk dataset")
+
+            # ---------------------- pass 2: topology ------------------------
+            chunk_name_pattern = self.dataset_input.edge_csv_file_name_pattern
+            if chunk_name_pattern.groups < 1:
+                chunk_name_pattern = re.compile(r"chunk_(\d+)\.csv$")
+
+            edge_index_np, edge_attr_np, edge_attr_cols = build_topology_from_DatasetInput(
+                id_map=id_map,
+                csv_dir=self.raw_dir,
+                edge_csv_file_name_pattern=self.dataset_input.edge_csv_file_name_pattern,
+                edge_attr_columns=self.dataset_input.edge_attr_columns,
+                chunk_name_pattern=chunk_name_pattern,
+                edge_dst_column=self.dataset_input.edge_dst_column,
+            )
+
+            # Recreate edge_attr location with the inferred dimensionality and append values
+            feature_store.remove_tensor(TensorAttr(None, "edge_attr", None))
+            feature_store.append_tensor(edge_attr_np, group_name=None, attr_name="edge_attr", index=None)
+            # ----------------------------------------------------------------
+
+            # ---------------------------- splits ----------------------------
+            y_full = feature_store.get_tensor(TensorAttr(None, "y", slice(None))).float()
+            dummy_x = torch.zeros((total_rows, 1), dtype=torch.float32)
+            split_seed = Data(x=dummy_x, y=y_full)
+            val_set_size = floor(self.val_set_size * total_rows)
+            test_set_size = floor(self.test_set_size * total_rows)
+            split = RandomNodeSplit(num_val=val_set_size, num_test=test_set_size)(split_seed)
+            train_node_ids = split.train_mask.nonzero(as_tuple=False).view(-1).long()
+            val_node_ids = split.val_mask.nonzero(as_tuple=False).view(-1).long()
+            test_node_ids = split.test_mask.nonzero(as_tuple=False).view(-1).long()
+            # ----------------------------------------------------------------
+
+            # ---------------------- node metadata map -----------------------
+            node_id_to_accession: dict[int, str] = {}
+            for row in accessions_df.itertuples(index=False):
+                old_id = int(row.i) - 1
+                if old_id < 0 or old_id >= id_map.shape[0]:
+                    continue
+                new_id = int(id_map[old_id])
+                if new_id < 0:
+                    continue
+                node_id_to_accession[new_id] = str(row.uniref).replace("UniRef90_", "", 1)
+
+            if len(node_id_to_accession) != total_rows:
+                raise RuntimeError(
+                    "Node metadata mapping size mismatch after filtering/reindexing: "
+                    f"{len(node_id_to_accession)} mapped nodes vs {total_rows} feature rows."
+                )
+            # ----------------------------------------------------------------
+
+            np.save(self.edge_index_path, edge_index_np)
+            np.save(self.id_map_path, id_map)
+
+            meta = {
+                "x_fields": [i for i in self.dataset_input.X_return_field_names if i != "Entry"],
+                "y_field": self.dataset_input.Y_return_field_name,
+                "edge_attr_fields": tuple(edge_attr_cols),
+                "num_nodes": int(total_rows),
+                "num_edges": int(edge_index_np.shape[1]),
+                "x_dim": int(feature_store.store.which_tensors["x"][0][1]),
+                "y_dim": int(feature_store.store.which_tensors["y"][0][1]),
+                "edge_attr_dim": int(edge_attr_np.shape[1]),
+                "train_node_ids": train_node_ids.cpu(),
+                "val_node_ids": val_node_ids.cpu(),
+                "test_node_ids": test_node_ids.cpu(),
+                "node_id_to_accession": dict(sorted(node_id_to_accession.items())),
+            }
+            torch.save(meta, self.meta_path)
+
+            if self.log:
+                _logger.info(
+                    "Processed on-disk graph at %s (nodes=%d, edges=%d, x_dim=%d, y_dim=%d, edge_attr_dim=%d)",
+                    self.processed_dir,
+                    meta["num_nodes"],
+                    meta["num_edges"],
+                    meta["x_dim"],
+                    meta["y_dim"],
+                    meta["edge_attr_dim"],
+                )
+        finally:
+            if feature_store is not None:
+                feature_store.close()
+
+    def _loader_transform(self, batch: Data) -> Data:
+        batch = self._attach_edge_attr(batch)
+        if self.transform is not None:
+            maybe_batch = self.transform(batch)
+            if maybe_batch is not None:
+                batch = maybe_batch
+        return batch
+    
+    def train_loader(self, num_neighbors: list[int], batch_size: int, shuffle: bool) -> NeighborLoader:
+        if self.feature_store is None or self.graph_store is None or self.train_node_ids is None:
+            raise RuntimeError("ProteinGraphOnDiskDataset is not initialized")
+        return NeighborLoader(
+            (self.feature_store, self.graph_store),
+            num_neighbors=num_neighbors,
+            input_nodes=self.train_node_ids,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            transform=self._loader_transform,
+        )
+
+    def val_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        if self.feature_store is None or self.graph_store is None or self.val_node_ids is None:
+            raise RuntimeError("ProteinGraphOnDiskDataset is not initialized")
+        return NeighborLoader(
+            (self.feature_store, self.graph_store),
+            num_neighbors=num_neighbors,
+            input_nodes=self.val_node_ids,
+            batch_size=batch_size,
+            shuffle=False,
+            transform=self._loader_transform,
+        )
+
+    def test_loader(self, num_neighbors: list[int], batch_size: int) -> NeighborLoader:
+        if self.feature_store is None or self.graph_store is None or self.test_node_ids is None:
+            raise RuntimeError("ProteinGraphOnDiskDataset is not initialized")
+        return NeighborLoader(
+            (self.feature_store, self.graph_store),
+            num_neighbors=num_neighbors,
+            input_nodes=self.test_node_ids,
+            batch_size=batch_size,
+            shuffle=False,
+            transform=self._loader_transform,
+        )
+
+    def close(self) -> None:
+        if self.feature_store is not None:
+            self.feature_store.close()
+            self.feature_store = None
 
 
 # Data interface for FFNNs (loading batches form disk, so not the whole thing in RAM)
