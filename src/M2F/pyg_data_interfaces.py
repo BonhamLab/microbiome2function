@@ -1339,9 +1339,488 @@ class ProteinGraphOnDiskDataset:
             self.feature_store = None
 
 
-# Data interface for FFNNs (loading batches form disk, so not the whole thing in RAM)
-class ProteinDataset:
-    pass
+class _ProteinDatasetView(Dataset):
+    def __init__(
+        self,
+        parent: ProteinDataset,
+        node_ids: torch.Tensor,
+        include_targets: bool,
+    ) -> None:
+        self.parent = parent
+        self.node_ids = node_ids.detach().cpu().long()
+        self.include_targets = include_targets
+
+    def __len__(self) -> int:
+        return int(self.node_ids.numel())
+
+    def __getitem__(self, idx: int):
+        n = len(self)
+        if idx < 0:
+            idx += n
+        if idx < 0 or idx >= n:
+            raise IndexError(f"Index out of range: {idx}")
+        node_id = int(self.node_ids[idx].item())
+        return self.parent._getitem_by_node_id(node_id, include_targets=self.include_targets)
+
+
+# Data interface for FFNNs (loading batches from disk, so not the whole thing in RAM)
+class ProteinDataset(Dataset):
+
+    def __init__(
+        self,
+        root: str | Path,
+        dataset_input: DatasetInput,
+        transform=None,
+        target_transform=None,
+        pre_transform=None,
+        pre_filter=None,
+        log: bool = True,
+        force_reload: bool = False,
+        *,
+        val_set_size: float = 0.1,
+        test_set_size: float = 0.1,
+        split: Literal["train", "val", "test", "all"] = "train",
+        include_targets: bool | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.dataset_input = dataset_input
+        self.dataset_input.validate(require_graph=False)
+
+        if ((val_set_size + test_set_size) >= 1.0
+            or val_set_size < 0.0
+            or test_set_size < 0.0):
+            raise ValueError()
+
+        self.transform = transform
+        self.target_transform = target_transform
+        self.pre_transform = pre_transform
+        self.pre_filter = pre_filter
+        self.log = log
+        self.force_reload = force_reload
+        self.val_set_size = val_set_size
+        self.test_set_size = test_set_size
+
+        self.feature_store: _ProteinFeatureStore | None = None
+        self.id_map: np.ndarray | None = None
+        self.train_node_ids: torch.Tensor | None = None
+        self.val_node_ids: torch.Tensor | None = None
+        self.test_node_ids: torch.Tensor | None = None
+        self.all_node_ids: torch.Tensor | None = None
+        self.active_node_ids: torch.Tensor | None = None
+        self.split: Literal["train", "val", "test", "all"] = split
+        self.include_targets = bool(split == "train") if include_targets is None else bool(include_targets)
+        self.meta: dict[str, Any] = {}
+
+        if self.force_reload:
+            if self.features_batches_dir.exists():
+                shutil.rmtree(self.features_batches_dir)
+            if self.processed_dir.exists():
+                shutil.rmtree(self.processed_dir)
+
+        if not self._raw_ready():
+            self.download()
+
+        if self.force_reload or not self._processed_ready():
+            self.process()
+
+        self._load_processed()
+        self.set_split(split=split, include_targets=include_targets)
+
+    @property
+    def original_node_accessions(self):
+        return [
+            str(row.uniref).replace("UniRef90_", "", 1)
+            for row in self.dataset_input.accession_ids.itertuples(index=False)
+            if not str(row.uniref).startswith(("UniRef90_UNK", "UniRef90_UPI"))
+        ]
+
+    @property
+    def raw_file_names(self) -> list[str]:
+        feature_batch_files = [f"features_{i}.csv" for i in range(1, self.num_feature_batches + 1)]
+        return [
+            self.dataset_input.path_to_accession_ids_csv_file.name,
+            *[str(Path("features_batches") / name) for name in feature_batch_files],
+        ]
+
+    @property
+    def processed_file_names(self) -> list[str]:
+        return [
+            "feature_store/zarr.json",
+            "id_map.npy",
+            "meta.pt"
+        ]
+
+    @property
+    def raw_dir(self) -> Path:
+        return self.root / "raw"
+
+    @property
+    def processed_dir(self) -> Path:
+        return self.root / "processed_ffnn"
+
+    @property
+    def features_batches_dir(self) -> Path:
+        return self.raw_dir / "features_batches"
+
+    @property
+    def feature_store_dir(self) -> Path:
+        return self.processed_dir / "feature_store"
+
+    @property
+    def id_map_path(self) -> Path:
+        return self.processed_dir / "id_map.npy"
+
+    @property
+    def meta_path(self) -> Path:
+        return self.processed_dir / "meta.pt"
+
+    @property
+    def num_feature_batches(self) -> int:
+        requested = self.dataset_input.num_feature_batches or 1
+        total_ids = max(1, len(self.original_node_accessions))
+        return min(requested, total_ids)
+
+    def _feature_batch_path(self, batch_id_1based: int) -> Path:
+        return self.features_batches_dir / f"features_{batch_id_1based}.csv"
+
+    def _raw_ready(self) -> bool:
+        if not self.raw_dir.exists():
+            return False
+
+        expected = [self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name]
+        expected.extend([self._feature_batch_path(i) for i in range(1, self.num_feature_batches + 1)])
+        return all(path.exists() for path in expected)
+
+    def _processed_ready(self) -> bool:
+        expected = [self.processed_dir / name for name in self.processed_file_names]
+        return all(path.exists() for path in expected)
+
+    def _load_processed(self) -> None:
+        meta = torch.load(self.meta_path, weights_only=False)
+        self.meta = meta
+
+        x_dim = int(meta["x_dim"])
+        y_dim = int(meta["y_dim"])
+
+        self.feature_store = _ProteinFeatureStore(
+            store_on_disk_location=self.feature_store_dir,
+            node_feature_dim=(x_dim,),
+            edge_feature_dim=(0,),
+            target_feature_dim=(y_dim,),
+            read_only=True
+        )
+
+        self.id_map = np.load(self.id_map_path)
+        self.train_node_ids = torch.as_tensor(meta["train_node_ids"]).long()
+        self.val_node_ids = torch.as_tensor(meta["val_node_ids"]).long()
+        self.test_node_ids = torch.as_tensor(meta["test_node_ids"]).long()
+        self.all_node_ids = torch.arange(int(meta["num_nodes"]), dtype=torch.long)
+
+    @staticmethod
+    def _materialize(src: Path, dst: Path) -> None:
+        if dst.exists():
+            return
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dst.symlink_to(src.resolve())
+        except OSError:
+            shutil.copy2(src, dst)
+
+    def download(self) -> None:
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.features_batches_dir.mkdir(parents=True, exist_ok=True)
+
+        # Materialize index + raw/
+        self._materialize(
+            self.dataset_input.path_to_accession_ids_csv_file,
+            self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
+        )
+
+        accessions = self.original_node_accessions
+        if len(accessions) == 0:
+            raise ValueError(
+                "No valid UniRef accessions to query after removing UNK/UPI entries."
+            )
+        batches = np.array_split(np.asarray(accessions, dtype=object), self.num_feature_batches)
+        fields = [self.dataset_input.Y_query_field_name, *self.dataset_input.X_query_field_names]
+
+        for i, batch in enumerate(batches, start=1):
+            batch_path = self._feature_batch_path(i)
+            if batch_path.exists():
+                continue
+
+            batch_ids = [str(x) for x in batch.tolist()]
+            if len(batch_ids) == 0:
+                pd.DataFrame(columns=fields).to_csv(batch_path, index=False)
+                continue
+            features_df = fetch_uniprotkb_fields(
+                uniref_ids=batch_ids,
+                fields=fields,
+                request_size=self.dataset_input.request_size,
+                rps=self.dataset_input.rps,
+                max_retry=self.dataset_input.max_retry,
+            )
+            features_df.to_csv(batch_path, index=False)
+
+    @staticmethod
+    def _to_tensor(value: Any, *, field_name: str, cast_float: bool = True) -> torch.Tensor:
+        arr = _to_numeric_vector(value, field_name=field_name, cast_float=cast_float)
+        return torch.from_numpy(arr)
+
+    def process(self) -> None:
+        # ------------------------- get the paths ------------------------
+        accessions_path = self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
+        if not accessions_path.exists():
+            raise FileNotFoundError(f"Expected accession index at {accessions_path}")
+        for i in range(1, self.num_feature_batches + 1):
+            batch_path = self._feature_batch_path(i)
+            if not batch_path.exists():
+                raise FileNotFoundError(f"Expected raw feature batch at {batch_path}")
+        # ----------------------------------------------------------------
+
+        # If the dataset was already loaded in read mode, release the handle
+        # before rebuilding the processed artifacts
+        self.close()
+        if self.processed_dir.exists():
+            shutil.rmtree(self.processed_dir) # ensures no stale state mixes with new processing
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.feature_store_dir.mkdir(parents=True, exist_ok=True)
+
+        accessions_df = pd.read_csv(accessions_path)
+        max_old_id = int(accessions_df["i"].max()) - 1
+        id_map = np.full(max_old_id + 1, -1, dtype=np.int64)
+
+        required_cols = [self.dataset_input.Y_return_field_name, *self.dataset_input.X_return_field_names]
+
+        feature_store: _ProteinFeatureStore | None = None
+        total_rows = 0
+        try:
+            # -------------------------- node features -----------------------
+            for i in range(1, self.num_feature_batches + 1):
+                batch_path = self._feature_batch_path(i)
+                x_np, y_np = build_features_from_DatasetInput(
+                    pre_transform=self.pre_transform,
+                    pre_filter=self.pre_filter,
+                    accessions_path=accessions_path,
+                    features_path=batch_path,
+                    required_cols=required_cols,
+                    global_id_map=id_map,
+                    X_return_field_names=self.dataset_input.X_return_field_names,
+                    Y_return_field_name=self.dataset_input.Y_return_field_name,
+                )
+
+                if x_np.shape[0] == 0:
+                    continue
+
+                if feature_store is None:
+                    feature_store = _ProteinFeatureStore(
+                        store_on_disk_location=self.feature_store_dir,
+                        node_feature_dim=(x_np.shape[1],),
+                        edge_feature_dim=(0,),
+                        target_feature_dim=(y_np.shape[1],),
+                        read_only=False,
+                    )
+                else:
+                    if x_np.shape[1] != int(feature_store.store.which_tensors["x"][0][1]):
+                        raise ValueError("Inconsistent X feature dimensionality across feature batches")
+                    if y_np.shape[1] != int(feature_store.store.which_tensors["y"][0][1]):
+                        raise ValueError("Inconsistent Y dimensionality across feature batches")
+
+                feature_store.append_tensor(x_np, group_name=None, attr_name="x", index=None)
+                feature_store.append_tensor(y_np, group_name=None, attr_name="y", index=None)
+                total_rows += int(x_np.shape[0])
+            # ----------------------------------------------------------------
+
+            if feature_store is None or total_rows == 0:
+                raise ValueError("All nodes were filtered out; cannot build FFNN dataset")
+
+            # ---------------------------- splits ----------------------------
+            y_full = feature_store.get_tensor(TensorAttr(None, "y", slice(None))).float()
+            dummy_x = torch.zeros((total_rows, 1), dtype=torch.float32)
+            split_seed = Data(x=dummy_x, y=y_full)
+            val_set_size = floor(self.val_set_size * total_rows)
+            test_set_size = floor(self.test_set_size * total_rows)
+            split = RandomNodeSplit(num_val=val_set_size, num_test=test_set_size)(split_seed)
+            train_node_ids = split.train_mask.nonzero(as_tuple=False).view(-1).long()
+            val_node_ids = split.val_mask.nonzero(as_tuple=False).view(-1).long()
+            test_node_ids = split.test_mask.nonzero(as_tuple=False).view(-1).long()
+            # ----------------------------------------------------------------
+
+            # ---------------------- node metadata map -----------------------
+            node_id_to_accession: dict[int, str] = {}
+            for row in accessions_df.itertuples(index=False):
+                old_id = int(row.i) - 1
+                if old_id < 0 or old_id >= id_map.shape[0]:
+                    continue
+                new_id = int(id_map[old_id])
+                if new_id < 0:
+                    continue
+                node_id_to_accession[new_id] = str(row.uniref).replace("UniRef90_", "", 1)
+
+            if len(node_id_to_accession) != total_rows:
+                raise RuntimeError(
+                    "Node metadata mapping size mismatch after filtering/reindexing: "
+                    f"{len(node_id_to_accession)} mapped nodes vs {total_rows} feature rows."
+                )
+            # ----------------------------------------------------------------
+
+            np.save(self.id_map_path, id_map)
+
+            meta = {
+                "x_fields": [i for i in self.dataset_input.X_return_field_names if i != "Entry"],
+                "y_field": self.dataset_input.Y_return_field_name,
+                "num_nodes": int(total_rows),
+                "x_dim": int(feature_store.store.which_tensors["x"][0][1]),
+                "y_dim": int(feature_store.store.which_tensors["y"][0][1]),
+                "train_node_ids": train_node_ids.cpu(),
+                "val_node_ids": val_node_ids.cpu(),
+                "test_node_ids": test_node_ids.cpu(),
+                "node_id_to_accession": dict(sorted(node_id_to_accession.items())),
+            }
+            torch.save(meta, self.meta_path)
+
+            if self.log:
+                _logger.info(
+                    "Processed FFNN dataset at %s (nodes=%d, x_dim=%d, y_dim=%d)",
+                    self.processed_dir,
+                    meta["num_nodes"],
+                    meta["x_dim"],
+                    meta["y_dim"]
+                )
+        finally:
+            if feature_store is not None:
+                feature_store.close()
+    
+    def _node_ids_for_split(self, split: Literal["train", "val", "test", "all"]) -> torch.Tensor:
+        if split == "train":
+            if self.train_node_ids is None:
+                raise RuntimeError("ProteinDataset is not initialized")
+            return self.train_node_ids
+        if split == "val":
+            if self.val_node_ids is None:
+                raise RuntimeError("ProteinDataset is not initialized")
+            return self.val_node_ids
+        if split == "test":
+            if self.test_node_ids is None:
+                raise RuntimeError("ProteinDataset is not initialized")
+            return self.test_node_ids
+        if split == "all":
+            if self.all_node_ids is None:
+                raise RuntimeError("ProteinDataset is not initialized")
+            return self.all_node_ids
+        raise ValueError(f"Unknown split: {split}")
+
+    def set_split(
+        self,
+        split: Literal["train", "val", "test", "all"],
+        include_targets: bool | None = None
+    ) -> ProteinDataset:
+        self.active_node_ids = self._node_ids_for_split(split)
+        self.split = split
+        self.include_targets = bool(split == "train") if include_targets is None else bool(include_targets)
+        return self
+
+    def _getitem_by_node_id(self, node_id: int, *, include_targets: bool):
+        if self.feature_store is None:
+            raise RuntimeError("ProteinDataset is not initialized")
+
+        x = self.feature_store.get_tensor(TensorAttr(None, "x", node_id)).float().view(-1)
+        if self.transform is not None:
+            x = self.transform(x)
+
+        if not include_targets:
+            return x
+
+        y = self.feature_store.get_tensor(TensorAttr(None, "y", node_id)).float().view(-1)
+        if self.target_transform is not None:
+            y = self.target_transform(y)
+        return x, y
+
+    def __len__(self) -> int:
+        if self.active_node_ids is None:
+            raise RuntimeError("ProteinDataset split is not initialized")
+        return int(self.active_node_ids.numel())
+
+    def __getitem__(self, idx: int):
+        if self.active_node_ids is None:
+            raise RuntimeError("ProteinDataset split is not initialized")
+        n = len(self)
+        if idx < 0:
+            idx += n
+        if idx < 0 or idx >= n:
+            raise IndexError(f"Index out of range: {idx}")
+        node_id = int(self.active_node_ids[idx].item())
+        return self._getitem_by_node_id(node_id, include_targets=self.include_targets)
+
+    def view(
+        self,
+        split: Literal["train", "val", "test", "all"],
+        *,
+        include_targets: bool | None = None,
+    ) -> Dataset:
+        node_ids = self._node_ids_for_split(split)
+        resolved_include_targets = bool(split == "train") if include_targets is None else bool(include_targets)
+        return _ProteinDatasetView(
+            parent=self,
+            node_ids=node_ids,
+            include_targets=resolved_include_targets,
+        )
+
+    def loader(
+        self,
+        batch_size: int,
+        shuffle: bool = False,
+        **kwargs,
+    ) -> pt_DataLoader:
+        return pt_DataLoader(
+            self,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            **kwargs,
+        )
+
+    def train_loader(self, batch_size: int, shuffle: bool = True, **kwargs) -> pt_DataLoader:
+        return pt_DataLoader(
+            self.view("train", include_targets=True),
+            batch_size=batch_size,
+            shuffle=shuffle,
+            **kwargs,
+        )
+
+    def val_loader(self, batch_size: int, shuffle: bool = False, **kwargs) -> pt_DataLoader:
+        return pt_DataLoader(
+            self.view("val", include_targets=True),
+            batch_size=batch_size,
+            shuffle=shuffle,
+            **kwargs,
+        )
+
+    def test_loader(self, batch_size: int, shuffle: bool = False, **kwargs) -> pt_DataLoader:
+        return pt_DataLoader(
+            self.view("test", include_targets=True),
+            batch_size=batch_size,
+            shuffle=shuffle,
+            **kwargs,
+        )
+
+    def predict_loader(
+        self,
+        batch_size: int,
+        split: Literal["train", "val", "test", "all"] = "all",
+        shuffle: bool = False,
+        **kwargs,
+    ) -> pt_DataLoader:
+        return pt_DataLoader(
+            self.view(split, include_targets=False),
+            batch_size=batch_size,
+            shuffle=shuffle,
+            **kwargs,
+        )
+
+    def close(self) -> None:
+        if self.feature_store is not None:
+            self.feature_store.close()
+            self.feature_store = None
 
 
 __all__ = [
