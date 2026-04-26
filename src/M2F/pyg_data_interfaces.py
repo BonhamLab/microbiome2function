@@ -876,7 +876,13 @@ class _ProteinFeatureStore(FeatureStore):
         return tuple(indexed.shape)
 
     def get_all_tensor_attrs(self) -> list[TensorAttr]:
-        return [TensorAttr(None, name, None) for name in self.store.which_tensors.keys()]
+        # `edge_attr` is edge-level and must not be fetched with node indices in
+        # PyG remote backend filtering; it is attached explicitly by loader transforms.
+        return [
+            TensorAttr(None, name, None)
+            for name in self.store.which_tensors.keys()
+            if name != "edge_attr"
+        ]
 
     def close(self) -> None:
         self.store.close()
