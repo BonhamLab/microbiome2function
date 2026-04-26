@@ -11,15 +11,15 @@ from torch_geometric.data import \
     GraphStore,
     TensorAttr,
     EdgeAttr)
-from torch_geometric.typing import EdgeTensorType, FeatureTensorType
-from torch_geometric.loader import NeighborSampler, NeighborLoader, DataLoader as pyg_DataLoader
+from torch_geometric.typing import EdgeTensorType
+from torch_geometric.loader import NeighborLoader
 from torch_geometric.transforms import RandomNodeSplit
 import numpy as np
 import pandas as pd
 
 # built-in
 from dataclasses import dataclass, field
-from typing import Iterator, Any, Optional
+from typing import Iterator, Any, Optional, Literal
 from pathlib import Path
 from math import floor
 import re
@@ -76,23 +76,24 @@ class DatasetInput:
 
     Expected raw format:
     - accession index CSV: columns ['uniref', 'i'] (1-based node ids)
-    - edge chunk CSVs: file names like chunk_<i>.csv, must contain a destination id
-      column (default: 'j'); all other columns can be used as edge attributes.
+    - edge chunk CSVs (optional for non-graph use): file names like chunk_<i>.csv,
+      must contain a destination id column (default: 'j'); all other columns can
+      be used as edge attributes.
     - X: feature field names to query and their return names used as model inputs (e.g. {'sequence': 'Sequence'})
     - Y: target field name to query and its return name used as model output
     """
     # core dataset attrs
     path_to_accession_ids_csv_file: Path
-    path_to_edge_csv_dir: Path
     X: dict[str, str]
     Y: dict[str, str]
+    path_to_edge_csv_dir: Path | None = None
 
     # internals -- uniprot query params
     request_size: int = 25
     rps: float = 1
     max_retry: int | float = 20
     num_feature_batches: int | None = None
-    edge_dst_column: str = "j"
+    edge_dst_column: str | None = "j"
     edge_attr_columns: list[str] | tuple[str, ...] | None = None
     edge_csv_file_name_pattern: re.Pattern[str] = field(
         default_factory=lambda: re.compile(r"chunk_\d+\.csv")
@@ -104,23 +105,27 @@ class DatasetInput:
 
     def __post_init__(self) -> None:
         self.path_to_accession_ids_csv_file = Path(self.path_to_accession_ids_csv_file)
-        self.path_to_edge_csv_dir = Path(self.path_to_edge_csv_dir)
+        if self.path_to_edge_csv_dir is not None:
+            self.path_to_edge_csv_dir = Path(self.path_to_edge_csv_dir)
         self._normalize_edge_schema()
         self._normalize_xy()
-        self.validate()
+        self.validate(require_graph=False)
         self.X["accession"] = "Entry" # <-- we always want to request accession
 
-    def validate(self) -> None:
+    def validate(self, *, require_graph: bool = False) -> None:
         self._validate_uniprot_request_params()
         self._validate_xy()
         self._validate_accession_ids_csv_file()
-        self._validate_edge_csv_files()
+        if require_graph:
+            self._validate_edge_csv_files()
     
     def _normalize_xy(self) -> None:
         self.X = {k.strip(): v.strip() for k, v in self.X.items()}
         self.Y = {k.strip(): v.strip() for k, v in self.Y.items()}
 
     def _normalize_edge_schema(self) -> None:
+        if self.edge_dst_column is None:
+            return
         if not isinstance(self.edge_dst_column, str):
             raise TypeError(
                 f"`edge_dst_column` must be str, got {type(self.edge_dst_column)}"
@@ -194,6 +199,19 @@ class DatasetInput:
         self._validation_ctx["num_nodes"] = int(df.shape[0])
     
     def _validate_edge_csv_files(self) -> None:
+        if self.path_to_edge_csv_dir is None:
+            raise ValueError(
+                "`path_to_edge_csv_dir` is required for graph datasets."
+            )
+        if self.edge_csv_file_name_pattern is None:
+            raise ValueError(
+                "`edge_csv_file_name_pattern` is required for graph datasets."
+            )
+        if self.edge_dst_column is None:
+            raise ValueError(
+                "`edge_dst_column` is required for graph datasets."
+            )
+
         if not self.path_to_edge_csv_dir.exists():
             raise FileNotFoundError(f"Edge CSV directory not found: {self.path_to_edge_csv_dir}")
 
@@ -242,6 +260,10 @@ class DatasetInput:
 
     @property
     def edge_csv_paths(self) -> Iterator[Path]:
+        if self.path_to_edge_csv_dir is None:
+            return
+        if self.edge_csv_file_name_pattern is None:
+            return
         for file in util.files_from(str(self.path_to_edge_csv_dir), self.edge_csv_file_name_pattern):
             yield Path(file)
 
@@ -519,7 +541,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         test_set_size: float = 0.1
     ) -> None:
         self.dataset_input = dataset_input
-        self.dataset_input.validate()
+        self.dataset_input.validate(require_graph=True)
 
         if ((val_set_size + test_set_size) >= 1.0
             or val_set_size < 0.0
@@ -906,7 +928,7 @@ class ProteinGraphOnDiskDataset:
     ) -> None:
         self.root = Path(root)
         self.dataset_input = dataset_input
-        self.dataset_input.validate()
+        self.dataset_input.validate(require_graph=True)
 
         if ((val_set_size + test_set_size) >= 1.0
             or val_set_size < 0.0
