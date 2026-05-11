@@ -7,6 +7,7 @@
 !requirements.txt
 !docs.md
 !FINAL_TODO_LIST.md
+!pyproject.toml
 
 # Static assets
 !assets/
@@ -42,3 +43,8 @@
 # Tests
 !tests/
 !tests/*.py
+
+# GitHub workflows
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
