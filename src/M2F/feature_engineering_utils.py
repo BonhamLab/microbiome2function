@@ -107,6 +107,12 @@ def save_df(df: pd.DataFrame, pth: str, metadata: Optional[dict] = None) -> None
 
     # ---------define-helpers---------
     def encode_strings(strings: np.ndarray) -> Tuple[str, np.ndarray]:
+        """
+        Execute `encode strings`.
+
+        Args:
+            strings: Input value for `strings`.
+        """
         max_len = max(len(s) for s in strings)
         # dtype='S⟨max_len⟩' == “fixed-length bytes” (1 byte per char)
         dtype = f"S{max_len}"
@@ -114,6 +120,12 @@ def save_df(df: pd.DataFrame, pth: str, metadata: Optional[dict] = None) -> None
         return dtype, data
 
     def flatten_offset(tuples: tuple) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Execute `flatten offset`.
+
+        Args:
+            tuples: Input value for `tuples`.
+        """
         flat_vals = np.fromiter((x for tup in tuples for x in tup), dtype='int32')
         lengths = np.array([len(t) for t in tuples], dtype='int32')
         # offsets assume an extra entry at end for slicing convenience
@@ -201,6 +213,12 @@ def load_df(path: str) -> pd.DataFrame:
     root = zarr.open_group(store, mode="r")
 
     def decode_strings(b: np.ndarray) -> np.ndarray:
+        """
+        Execute `decode strings`.
+
+        Args:
+            b: Input value for `b`.
+        """
         return np.char.decode(b, encoding="ascii")
 
     full_acc = decode_strings(root["accessions"][:])

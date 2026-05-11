@@ -28,6 +28,9 @@ from . import util
 # -- again, harmless, at least as long as the M2F user sticks to setuptools<81 (which is ensured by requirements.txt)
 @util.suppress_warnings(UserWarning)
 def get_GODag():
+    """
+    Execute `get GODag`.
+    """
     mod = importlib.import_module("goatools.obo_parser")
     return mod.GODag
 
@@ -35,6 +38,9 @@ def get_GODag():
 # which I couldn't care less about because I need one of the hidden layer's states -- not the output layer
 @contextlib.contextmanager
 def silent_transformers():
+    """
+    Execute `silent transformers`.
+    """
     logger = logging.getLogger("transformers.modeling_utils")
     old_level = logger.level
     logger.setLevel(logging.ERROR)
@@ -94,6 +100,15 @@ class AAChainEmbedder:
         dtype: Union[torch.dtype, None] = None,
         representation_layer: Union[int, str] = "second_to_last",
     ):
+        """
+        Initialize a `AAChainEmbedder` instance.
+
+        Args:
+            model_key: Input value for `model_key`.
+            device: Input value for `device`.
+            dtype: Input value for `dtype`.
+            representation_layer: Input value for `representation_layer`.
+        """
         _logger.info(
             "Initialising AAChainEmbedder(model_key=%s, device=%s, dtype=%s, repr_layer=%s)",
             model_key, device, dtype, representation_layer,
@@ -252,6 +267,16 @@ class FreeTXTEmbedder:
         cache_file_path: Union[str, None] = None,
         caching_mode: str = "NOT_CACHING", max_cache_size_kb: int = 1000
     ):
+        """
+        Initialize a `FreeTXTEmbedder` instance.
+
+        Args:
+            api_key: Input value for `api_key`.
+            model: Input value for `model`.
+            cache_file_path: Input value for `cache_file_path`.
+            caching_mode: Input value for `caching_mode`.
+            max_cache_size_kb: Input value for `max_cache_size_kb`.
+        """
         _logger.info("Initialising FreeTXTEmbedder(model=%s, caching_mode=%s, cache_path=%s)",
                      model, caching_mode, cache_file_path)
         
@@ -308,6 +333,12 @@ class FreeTXTEmbedder:
         self._conn.close()
 
     def __db_lookup(self, s: str):
+        """
+        Execute `db lookup`.
+
+        Args:
+            s: Input value for `s`.
+        """
         self._db.execute("""
                 SELECT vec FROM embeddings
                 WHERE text = :text;
@@ -315,13 +346,34 @@ class FreeTXTEmbedder:
         return self._db.fetchone()
 
     def __LRU_lookup(self, s: str):
+        """
+        Execute `LRU lookup`.
+
+        Args:
+            s: Input value for `s`.
+        """
         return self._LRU_cache.get(s)
 
     @staticmethod
     def __row_size_kb(s: str, emb: np.ndarray):
+        """
+        Execute `row size kb`.
+
+        Args:
+            s: Input value for `s`.
+            emb: Input value for `emb`.
+        """
         return (sys.getsizeof(s) + emb.nbytes) / 1024
 
     def __update_LRU_cache_size(self, s: str, emb: np.ndarray, *, how: str):
+        """
+        Execute `update LRU cache size`.
+
+        Args:
+            s: Input value for `s`.
+            emb: Input value for `emb`.
+            how: Input value for `how`.
+        """
         if how == "ADD":
             self._LRU_cache_size_kb += self.__row_size_kb(s, emb)
             return
@@ -332,6 +384,13 @@ class FreeTXTEmbedder:
             raise ValueError(f"Invalid 'how' argument was passed. Expected 'ADD' or 'DEL', but {how} was given")
 
     def __store_in_DB(self, s: str, emb: np.ndarray):
+        """
+        Execute `store in DB`.
+
+        Args:
+            s: Input value for `s`.
+            emb: Input value for `emb`.
+        """
         self._db.execute("""
             INSERT OR REPLACE INTO embeddings VALUES (:text, :vec)
             """, {"text": s, "vec": emb.tobytes()})
@@ -339,11 +398,24 @@ class FreeTXTEmbedder:
         _logger.debug("Stored sequence in SQLite cache: %s", s[:30])
 
     def __store_in_LRU(self, s: str, emb: np.ndarray):
+        """
+        Execute `store in LRU`.
+
+        Args:
+            s: Input value for `s`.
+            emb: Input value for `emb`.
+        """
         self._LRU_cache[s] = emb
         _logger.debug("Stored sequence in LRU cache: %s", s[:30])
 
     # ---------PROTECTED---------
     def _lookup(self, s: str):
+        """
+        Execute `lookup`.
+
+        Args:
+            s: Input value for `s`.
+        """
         out = self.__LRU_lookup(s) if self._LRU_cache is not None else None
         if out is not None:
             self._LRU_cache.move_to_end(s)
@@ -356,6 +428,13 @@ class FreeTXTEmbedder:
         return None
 
     def _store(self, s: str, emb: np.ndarray):
+        """
+        Execute `store`.
+
+        Args:
+            s: Input value for `s`.
+            emb: Input value for `emb`.
+        """
         if self.caching_mode == "NOT_CACHING":
             return
         item_size = self.__row_size_kb(s, emb)
@@ -417,6 +496,9 @@ class MultiHotEncoder:
     """Generic helper: tuple-of-labels ➜ tuple-of-int-indices (memory-light)."""
 
     def __init__(self):
+        """
+        Initialize a `MultiHotEncoder` instance.
+        """
         self.mlb = MultiLabelBinarizer()
 
     def encode(self, sequences: pd.Series):
@@ -462,6 +544,12 @@ class GOEncoder(MultiHotEncoder):
     """
 
     def __init__(self, obo_path: str):
+        """
+        Initialize a `GOEncoder` instance.
+
+        Args:
+            obo_path: Input value for `obo_path`.
+        """
         super().__init__()
         if not os.path.exists(obo_path):
             raise FileNotFoundError(f"OBO not found: {obo_path}")
@@ -488,6 +576,13 @@ class GOEncoder(MultiHotEncoder):
     
     # ---------PROTECTED---------
     def _auto_depth(self, series: pd.Series, coverage_target: float = 0.8) -> int:
+        """
+        Execute `auto depth`.
+
+        Args:
+            series: Input value for `series`.
+            coverage_target: Input value for `coverage_target`.
+        """
         if not (0 <= coverage_target <= 1):
             raise ValueError(f"coverage_target must be in [0, 1], got {coverage_target}")
 
@@ -504,6 +599,13 @@ class GOEncoder(MultiHotEncoder):
         return depth
 
     def _collapse_to_depth(self, go_ids, k: int) -> Tuple[str]:
+        """
+        Execute `collapse to depth`.
+
+        Args:
+            go_ids: Input value for `go_ids`.
+            k: Input value for `k`.
+        """
         if k < 0:
             raise ValueError(f"GO depth must be >= 0, got {k}")
 
@@ -655,6 +757,13 @@ class ECEncoder(MultiHotEncoder):
         return best_depth
 
     def _collapse_to_depth_helper(self, ec: str, depth: int) -> Optional[str]:
+        """
+        Execute `collapse to depth helper`.
+
+        Args:
+            ec: Input value for `ec`.
+            depth: Input value for `depth`.
+        """
         parts = self._extract_ec_codes(ec)
         if len(parts) < depth:
             return None
@@ -665,6 +774,13 @@ class ECEncoder(MultiHotEncoder):
         ecs,
         depth: int
     ) -> Tuple[str, ...]:
+        """
+        Execute `collapse to depth`.
+
+        Args:
+            ecs: Input value for `ecs`.
+            depth: Input value for `depth`.
+        """
         if not (1 <= depth <= 4):
             raise ValueError(f"EC depth must be in [1, 4], got {depth}")
 

@@ -21,6 +21,9 @@ _logger = logging.getLogger(__name__)
 
 class GraphConv(MessagePassing):
 
+    """
+    Represent the `GraphConv` type.
+    """
     def __init__(self,
                  in_dim: int,
                  edge_dim: int,
@@ -33,6 +36,21 @@ class GraphConv(MessagePassing):
                  edge_features_used_as: Literal["scaling", "catting"] = "scaling",
                  node_dim: int = -2,
                  decomposed_layers: int = 1):
+        """
+        Initialize a `GraphConv` instance.
+
+        Args:
+            in_dim: Input value for `in_dim`.
+            edge_dim: Input value for `edge_dim`.
+            msg_dim: Input value for `msg_dim`.
+            state_dim: Input value for `state_dim`.
+            aggr: Input value for `aggr`.
+            aggr_kwargs: Input value for `aggr_kwargs`.
+            flow: Input value for `flow`.
+            edge_features_used_as: Input value for `edge_features_used_as`.
+            node_dim: Input value for `node_dim`.
+            decomposed_layers: Input value for `decomposed_layers`.
+        """
         super().__init__(
             aggr,
             aggr_kwargs=aggr_kwargs,
@@ -63,20 +81,45 @@ class GraphConv(MessagePassing):
         )
     
     def message(self, h_j: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
+        """
+        Execute `message`.
+
+        Args:
+            h_j: Input value for `h_j`.
+            edge_attr: Input value for `edge_attr`.
+        """
         if self.edge_features_used_as == "scaling":
             gate = torch.sigmoid(self.edge_weight_lin_transform(edge_attr))
             return self.msg_lin_transform(gate * h_j)
         return self.msg_lin_transform(torch.cat([h_j, edge_attr], dim=-1))
     
     def update(self, aggr_out: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+        """
+        Execute `update`.
+
+        Args:
+            aggr_out: Input value for `aggr_out`.
+            h: Input value for `h`.
+        """
         pre_h = torch.cat([h, aggr_out], dim=-1)
         return relu(self.upd_lin_transform(pre_h))
 
     def forward(self, h, edge_index, edge_attr):
+        """
+        Run forward propagation for `GraphConv`.
+
+        Args:
+            h: Input value for `h`.
+            edge_index: Input value for `edge_index`.
+            edge_attr: Input value for `edge_attr`.
+        """
         return self.propagate(edge_index=edge_index, h=h, edge_attr=edge_attr)
 
 
 class GraphConvNodeClassifier(Module):
+    """
+    Represent the `GraphConvNodeClassifier` type.
+    """
     def __init__(self,
                  in_dim: int,
                  edge_dim: int,
@@ -86,6 +129,18 @@ class GraphConvNodeClassifier(Module):
                  *,
                  edge_features_used_as: Literal["scaling", "catting"] = "scaling",
                  dropout_p: float = 0.5):
+        """
+        Initialize a `GraphConvNodeClassifier` instance.
+
+        Args:
+            in_dim: Input value for `in_dim`.
+            edge_dim: Input value for `edge_dim`.
+            msg_dim: Input value for `msg_dim`.
+            state_dim: Input value for `state_dim`.
+            out_dim: Input value for `out_dim`.
+            edge_features_used_as: Input value for `edge_features_used_as`.
+            dropout_p: Input value for `dropout_p`.
+        """
         super().__init__()
         self.conv1 = GraphConv(
             in_dim=in_dim,
@@ -105,6 +160,14 @@ class GraphConvNodeClassifier(Module):
         self.dropout = Dropout(p=dropout_p)
 
     def _forward_logits(self, x, edge_index, edge_attr):
+        """
+        Execute `forward logits`.
+
+        Args:
+            x: Input value for `x`.
+            edge_index: Input value for `edge_index`.
+            edge_attr: Input value for `edge_attr`.
+        """
         h = self.conv1(x, edge_index, edge_attr)
         h = relu(h)
         h = self.dropout(h)
@@ -112,6 +175,14 @@ class GraphConvNodeClassifier(Module):
         return self.lin(h)
 
     def forward(self, x, edge_index, edge_attr):
+        """
+        Run forward propagation for `GraphConvNodeClassifier`.
+
+        Args:
+            x: Input value for `x`.
+            edge_index: Input value for `edge_index`.
+            edge_attr: Input value for `edge_attr`.
+        """
         out = self._forward_logits(x, edge_index, edge_attr)
         if self.training:
             return out
@@ -130,6 +201,22 @@ class GraphConvNodeClassifier(Module):
             lr_sched=None,
             lr_sched_kwargs: dict = None,
             report_performance_every_kth_epoch: int = 10):
+        """
+        Fit the current object.
+
+        Args:
+            train: Input value for `train`.
+            val: Input value for `val`.
+            epochs: Input value for `epochs`.
+            early_stopping: Input value for `early_stopping`.
+            save_model_to: Input value for `save_model_to`.
+            tolerance: Input value for `tolerance`.
+            optimizer: Input value for `optimizer`.
+            optimizer_kwargs: Input value for `optimizer_kwargs`.
+            lr_sched: Input value for `lr_sched`.
+            lr_sched_kwargs: Input value for `lr_sched_kwargs`.
+            report_performance_every_kth_epoch: Input value for `report_performance_every_kth_epoch`.
+        """
         if epochs < 1:
             raise ValueError("`epochs` must be >= 1")
 
@@ -303,6 +390,13 @@ class GraphConvNodeClassifier(Module):
         return out
 
     def test(self, test: NeighborLoader, *, threshold: float = 0.5) -> dict[str, float]:
+        """
+        Test the current object.
+
+        Args:
+            test: Input value for `test`.
+            threshold: Input value for `threshold`.
+        """
         device = next(self.parameters()).device
         criterion = torch.nn.BCEWithLogitsLoss()
         _logger.info("Starting GNN test (threshold=%.3f, device=%s)", threshold, device)

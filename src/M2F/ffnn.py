@@ -19,12 +19,25 @@ _logger = logging.getLogger(__name__)
 
 class FFNN(Module):
 
+    """
+    Represent the `FFNN` type.
+    """
     def __init__(self,
                  in_dim: int,
                  hidden_dim1: int,
                  hidden_dim2: int,
                  out_dim: int,
                  dropout_p: float = 0.5):
+        """
+        Initialize a `FFNN` instance.
+
+        Args:
+            in_dim: Input value for `in_dim`.
+            hidden_dim1: Input value for `hidden_dim1`.
+            hidden_dim2: Input value for `hidden_dim2`.
+            out_dim: Input value for `out_dim`.
+            dropout_p: Input value for `dropout_p`.
+        """
         super().__init__()
         self.l1 = Linear(in_dim, hidden_dim1)
         self.l2 = Linear(hidden_dim1, hidden_dim2)
@@ -32,11 +45,23 @@ class FFNN(Module):
         self.l_out = Linear(hidden_dim2, out_dim)
 
     def _forward_logits(self, X: torch.Tensor) -> torch.Tensor:
+        """
+        Execute `forward logits`.
+
+        Args:
+            X: Input value for `X`.
+        """
         h = relu(self.l1(X))
         h = self.dropout(relu(self.l2(h)))
         return self.l_out(h)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
+        """
+        Run forward propagation for `FFNN`.
+
+        Args:
+            X: Input value for `X`.
+        """
         y_hat = self._forward_logits(X)
         if self.training:
             return y_hat
@@ -55,6 +80,22 @@ class FFNN(Module):
             lr_sched=None,
             lr_sched_kwargs: dict | None = None,
             report_performance_every_kth_epoch: int = 10):
+        """
+        Fit the current object.
+
+        Args:
+            train: Input value for `train`.
+            val: Input value for `val`.
+            epochs: Input value for `epochs`.
+            early_stopping: Input value for `early_stopping`.
+            save_model_to: Input value for `save_model_to`.
+            tolerance: Input value for `tolerance`.
+            optimizer: Input value for `optimizer`.
+            optimizer_kwargs: Input value for `optimizer_kwargs`.
+            lr_sched: Input value for `lr_sched`.
+            lr_sched_kwargs: Input value for `lr_sched_kwargs`.
+            report_performance_every_kth_epoch: Input value for `report_performance_every_kth_epoch`.
+        """
         if epochs < 1:
             raise ValueError("`epochs` must be >= 1")
 
@@ -224,6 +265,13 @@ class FFNN(Module):
         return out
 
     def test(self, test: pt_DataLoader, *, threshold: float = 0.5) -> dict[str, float]:
+        """
+        Test the current object.
+
+        Args:
+            test: Input value for `test`.
+            threshold: Input value for `threshold`.
+        """
         device = next(self.parameters()).device
         criterion = torch.nn.BCEWithLogitsLoss()
         _logger.info("Starting FFNN test (threshold=%.3f, device=%s)", threshold, device)

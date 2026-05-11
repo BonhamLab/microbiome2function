@@ -5,6 +5,15 @@ _logger = logging.getLogger(__name__)
 
 
 def accuracy(logits, y_true, mask, threshold=0.5):
+    """
+    Execute `accuracy`.
+
+    Args:
+        logits: Input value for `logits`.
+        y_true: Input value for `y_true`.
+        mask: Input value for `mask`.
+        threshold: Input value for `threshold`.
+    """
     if mask.sum() == 0:
         _logger.debug("accuracy(): empty mask, returning 0.0")
         return 0.0
@@ -14,6 +23,16 @@ def accuracy(logits, y_true, mask, threshold=0.5):
     return (preds == true).float().mean().item()
 
 def recall(logits, y_true, mask, threshold=0.5, eps=1e-8):
+    """
+    Execute `recall`.
+
+    Args:
+        logits: Input value for `logits`.
+        y_true: Input value for `y_true`.
+        mask: Input value for `mask`.
+        threshold: Input value for `threshold`.
+        eps: Input value for `eps`.
+    """
     if mask.sum() == 0:
         _logger.debug("recall(): empty mask, returning 0.0")
         return 0.0
@@ -26,6 +45,16 @@ def recall(logits, y_true, mask, threshold=0.5, eps=1e-8):
 
 
 def precision(logits, y_true, mask, threshold=0.5, eps=1e-8):
+    """
+    Execute `precision`.
+
+    Args:
+        logits: Input value for `logits`.
+        y_true: Input value for `y_true`.
+        mask: Input value for `mask`.
+        threshold: Input value for `threshold`.
+        eps: Input value for `eps`.
+    """
     if mask.sum() == 0:
         _logger.debug("precision(): empty mask, returning 0.0")
         return 0.0
@@ -38,6 +67,16 @@ def precision(logits, y_true, mask, threshold=0.5, eps=1e-8):
 
 
 def f1(logits, y_true, mask, threshold=0.5, eps=1e-8):
+    """
+    Execute `f1`.
+
+    Args:
+        logits: Input value for `logits`.
+        y_true: Input value for `y_true`.
+        mask: Input value for `mask`.
+        threshold: Input value for `threshold`.
+        eps: Input value for `eps`.
+    """
     if mask.sum() == 0:
         _logger.debug("f1(): empty mask, returning 0.0")
         return 0.0

@@ -72,6 +72,12 @@ def _clean_col_helper(
 
     def _inner(value: str) -> Union[Tuple[str, ...], Any]:
         # pass through non-strings (will become empty tuple later if it's a NaN)
+        """
+        Execute `inner`.
+
+        Args:
+            value: Input value for `value`.
+        """
         if not isinstance(value, str):
             return value
 
