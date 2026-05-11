@@ -1,451 +1,254 @@
 ![LOGO](https://raw.githubusercontent.com/Yehor-Mishchyriak/microbiome2function/main/assets/M2F_banner.png)
 
-**A practical pipeline for mining UniProt, cleaning annotations, and turning biology into machine-learnable features**
+# microbiome2function (M2F)
 
-**Author:**  
-Yehor Mishchyriak
-*Student Research Intern, Bonham Lab, Tufts University School of Medicine (November 2025 - Present)*
+A toolkit for turning UniProt-linked protein annotations into machine-learning datasets.
 
-*Summer Research Intern, Bonham Lab, Tufts University School of Medicine (June–July 2025)*
+M2F supports:
+- UniProt mining from UniRef accessions
+- Annotation cleaning and normalization
+- Embedding/encoding into numeric features
+- Dataset interfaces for:
+  - PyTorch Geometric GNN training (`ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`)
+  - Plain PyTorch FFNN training (`ProteinDataset`)
 
-*Undergraduate Student, Wesleyan University (2022–2026)*
+## Package Status
 
-**Affiliations:**  
-Bonham Lab, Tufts University School of Medicine  
-Wesleyan University, Middletown, CT, USA
+- Package name: `microbiome2function`
+- Python: `>=3.11,<3.13`
+- Source layout: `src/`
+- Main package: `src/M2F`
 
-**Contact:**  
-ymishchyriak@wesleyan.edu
+## Installation
 
----
-
-## Contents
-1. Setup & Layout
-2. Overview  
-3. Typical Data Flow  
-4. API Reference  
-   - logging  
-   - data mining  
-   - data cleaning  
-   - numerical data encoding  
-   - data persistence  
-   - miscellaneous  
-5. PyG InMemory Dataset Interface
-6. Extending M2F  
-7. Examples  
-
----
-
-# 1. Setup & Layout
-
-M2F now lives under a `src/` layout:
-
-- package source: `src/M2F`
-- active notebooks: `model_notebooks/`
-- legacy examples: `legacy_code_examples/`
-
-To use `import M2F` locally from the repository root, add `src` to `PYTHONPATH`:
-
-```bash
-export PYTHONPATH="$PWD/src"
-```
-
-Then install dependencies:
+From repository root:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
----
+Run tests:
 
-# 2. Overview
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
 
-**Problem.** Functional annotation projects need clean, machine-ready protein representations at scale.  
-Raw UniProt text is messy — free-form prose, PubMed artifacts, heterogeneous annotations (GO, EC, domains, pathways). Most labs reinvent brittle scripts repeatedly.
+## Public API (Top-Level)
 
-**Solution (M2F).** A modular toolkit that:
+```python
+import M2F
+```
 
-- Mines UniProtKB at scale with rate-limited, batched REST calls.  
-- Cleans & normalizes key text fields using targeted regex extractors.  
-- Encodes features into numerical tensors:  
-  - Dense embeddings for amino-acid sequences and free-text fields  
-  - Structured label encodings for GO & EC  
-- Persists datasets compactly in a single Zarr ZipStore with easy reconstruction.
+Current top-level exports include:
+- Logging: `configure_logging`
+- Mining: `extract_accessions_from_humann`, `extract_all_accessions_from_dir`, `fetch_uniprotkb_fields`, `fetch_save_uniprotkb_batches`
+- Cleaning: `clean_col`, `clean_cols`
+- Embedding/encoding: `AAChainEmbedder`, `FreeTXTEmbedder`, `MultiHotEncoder`, `GOEncoder`, `ECEncoder`, `encode_multihot`, `get_GODag`
+- Feature engineering/persistence: `embed_ft_domains`, `embed_AAsequences`, `embed_freetxt_cols`, `encode_go`, `encode_ec`, `empty_tuples_to_NaNs`, `save_df`, `load_df`
+- Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`
+- Metrics: `accuracy`, `recall`, `precision`, `f1`
+- Dataset interfaces: `DatasetInput`, `build_topology_from_DatasetInput`, `build_features_from_DatasetInput`, `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`, `ProteinDataset`
+- Utility namespace: `util`
 
-**End state.** A reproducible pipeline from HUMAnN outputs or accession IDs → clean UniProt records → tidy vector tables (dense vectors + multihot tuples) ready for GNNs or any downstream ML.
+## Typical Workflow
 
----
+1. Extract accessions from HUMAnN output (or provide your own UniRef list).
+2. Fetch UniProt fields in batches.
+3. Clean annotation columns into tuple-based representations.
+4. Encode/embed into numeric vectors.
+5. Build model dataset (graph or non-graph).
+6. Train and evaluate model.
 
-# 3. Typical Data Flow
+## Quick Start: Mining + Cleaning + Persistence
 
-### 1. Accession mining  
-HUMAnN gene-families TSV files are passed to:
+```python
+import logging
+import M2F
 
-- `extract_accessions_from_humann(file_path)`
-- or `extract_all_accessions_from_dir(dir_path)`
+M2F.configure_logging("logs", file_level=logging.DEBUG, console_level=logging.INFO)
 
-Both return **UniRef** and **UniClust** accession iterables.
+# 1) Mine UniRef IDs
+unirefs, _ = M2F.extract_accessions_from_humann("sample_gene_families.tsv")
 
-### 2. UniProtKB retrieval  
-Only UniRef can be mined directly from UniProtKB. UniClust IDs are stashed.
+# 2) Fetch UniProt fields
+raw = M2F.fetch_uniprotkb_fields(
+    uniref_ids=unirefs,
+    fields=["accession", "sequence", "go_f", "ec"],
+    request_size=50,
+    rps=5,
+    max_retry=20,
+)
 
-Use:
+# 3) Clean columns (example)
+cleaned = M2F.clean_cols(
+    raw,
+    col_names=["Gene Ontology (molecular function)", "EC number", "Sequence"],
+    inplace=False,
+)
 
-- `fetch_uniprotkb_fields`
-- or `fetch_save_uniprotkb_batches`
+# 4) Persist
+M2F.save_df(cleaned, "features.zip", metadata={"pipeline": "example"})
+restored = M2F.load_df("features.zip")
+```
 
-to retrieve selected UniProt fields.
+Notes:
+- `fields` must be valid UniProt API field identifiers.
+- Returned DataFrame column names may differ from query keys; align downstream mappings accordingly.
+- `save_df` expects an `Entry` column and `.zip` output path.
 
-### 3. Cleaning  
-Using `clean_cols`, per-column regex extractors remove metadata, normalize free text, strip PubMed references, and produce predictable tuple-based columns.
+## Graph Data Interface (PyG)
 
-### 4. Feature engineering  
-Pass the cleaned DataFrame to feature-engineering utilities to encode:
+M2F includes two graph dataset interfaces:
+- `ProteinGraphInMemoryDataset`: one processed graph saved to `processed/data.pt`.
+- `ProteinGraphOnDiskDataset`: zarr-backed feature store + on-disk topology for larger datasets.
 
-- dense vector embeddings
-- multihot label tuples
+### Required Input Contract
 
-### 5. Persistence  
-Use:
+Use `DatasetInput` to define schema and retrieval parameters:
 
-- `save_df(df, path)`  
-- later `load_df(path)`
+```python
+from pathlib import Path
+from M2F import DatasetInput
 
-to store/load the ML-ready dataset in a single ZipStore.
+inp = DatasetInput(
+    path_to_accession_ids_csv_file=Path("data/uniref_index.csv"),
+    path_to_edge_csv_dir=Path("data/edges"),
+    X={"sequence": "Sequence", "go_f": "go_mf"},
+    Y={"ec": "target_ec"},
+    request_size=25,
+    rps=1.0,
+    max_retry=20,
+    num_feature_batches=8,
+    edge_dst_column="j",
+)
+```
 
----
+Accession index CSV must contain exactly:
+- `uniref` (e.g. `UniRef90_*`)
+- `i` (1-based integer node IDs)
 
-# 4. API Reference
+For graph mode, edge chunk files must exist and match the expected naming pattern (default `chunk_<i>.csv`).
+
+### On-Disk Graph Example
+
+```python
+from pathlib import Path
+import torch
+from M2F import ProteinGraphOnDiskDataset, GraphConvNodeClassifier
+
+ds = ProteinGraphOnDiskDataset(
+    root=Path("runs/graph_ondisk"),
+    dataset_input=inp,
+    force_reload=False,
+    val_set_size=0.1,
+    test_set_size=0.1,
+)
+
+train_loader = ds.train_loader(num_neighbors=[15, 10], batch_size=1024, shuffle=True)
+val_loader = ds.val_loader(num_neighbors=[15, 10], batch_size=1024)
+test_loader = ds.test_loader(num_neighbors=[15, 10], batch_size=1024)
+
+model = GraphConvNodeClassifier(
+    in_dim=int(ds.meta["x_dim"]),
+    edge_dim=int(ds.meta["edge_attr_dim"]),
+    msg_dim=128,
+    state_dim=128,
+    out_dim=int(ds.meta["y_dim"]),
+)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+
+history = model.fit(
+    train=train_loader,
+    val=val_loader,
+    epochs=30,
+    tolerance=5,
+    report_performance_every_kth_epoch=1,
+    save_model_to="runs/checkpoints_gnn",
+)
+
+metrics = model.test(test_loader)
+print(history["best_val_loss"], metrics)
+
+ds.close()
+```
+
+## FFNN Dataset Interface (`ProteinDataset`)
+
+For non-graph workflows, use `ProteinDataset` (zarr-backed features + targets, no edges):
+
+```python
+from pathlib import Path
+import torch
+from M2F import DatasetInput, ProteinDataset, FFNN
+
+inp_ffnn = DatasetInput(
+    path_to_accession_ids_csv_file=Path("data/uniref_index.csv"),
+    X={"sequence": "Sequence"},
+    Y={"ec": "target_ec"},
+    num_feature_batches=8,
+)
+
+dset = ProteinDataset(
+    root=Path("runs/ffnn_dataset"),
+    dataset_input=inp_ffnn,
+    split="train",
+    include_targets=True,
+)
+
+train_loader = dset.train_loader(batch_size=512, shuffle=True)
+val_loader = dset.val_loader(batch_size=512)
+test_loader = dset.test_loader(batch_size=512)
+
+model = FFNN(in_dim=int(dset.meta["x_dim"]), hidden_dim1=256, hidden_dim2=128, out_dim=int(dset.meta["y_dim"]))
+model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
+history = model.fit(train_loader, val_loader, epochs=30, tolerance=5, report_performance_every_kth_epoch=1)
+metrics = model.test(test_loader)
+print(history["best_val_loss"], metrics)
+
+dset.close()
+```
+
+## Important Operational Notes
+
+- `ProteinGraphOnDiskDataset` and `ProteinDataset` process features in batches and build a global node reindex map.
+- Topology for on-disk graph datasets is built after feature processing so filtered-node reindexing is stable.
+- Feature shards with duplicate `Entry` rows are rejected.
+- Inconsistent per-row feature dimensions are rejected.
+- `force_reload=True` rebuilds raw/processed artifacts from scratch.
 
 ## Logging
 
-### `configure_logging(logs_dir, file_level=logging.DEBUG, console_level=logging.WARNING)`
-Configures a rotating file logger and console logger. Safe to call multiple times.
-
-**Parameters**  
-- `logs_dir`: directory for log files  
-- `file_level`: file logging level  
-- `console_level`: console logging level  
-
----
-
-## Data Mining
-
-### `extract_accessions_from_humann(file_path, out_type=list)`
-Extracts UniRef and UniClust accessions from a HUMAnN gene-families TSV.  
-Filters out `UNK*` and `UPI*` IDs. Raises `KeyError` if `READS_UNMAPPED` is missing.
-
-**Returns:** `(unirefs, uniclusts)`
-
----
-
-### `extract_all_accessions_from_dir(dir_path, pattern=None, out_type=list)`
-Scans a directory of HUMAnN files, collecting UniRef90 and UniClust90 accessions.
-
-**Returns:** `(all_unirefs, all_uniclusts)`
-
----
-
-### `fetch_uniprotkb_fields(uniref_ids, fields, request_size=100, rps=10, max_retry=inf)`
-Rate-limited, batched UniProtKB retrieval using the TSV REST API. Splits `uniref_ids`
-into chunks of `request_size`, sleeps to obey `rps`, and on HTTP errors halves the
-chunk size recursively until either success or `request_size==1`.
-
-**Notes:**
-- `request_size` must be ≥1  
-- Failed IDs in the smallest chunk are dropped (with a warning)  
-- Returns an empty DataFrame with the requested columns if nothing is retrieved  
-
----
-
-### `fetch_save_uniprotkb_batches(...)`
-Retrieves **very large** ID lists by splitting into coarse batches and writing each batch to Parquet/CSV.  
-Designed for HPC/SLURM.
-
-**Notes:** uses `fetch_uniprotkb_fields` under the hood (`single_api_request_size` per HTTP call), falls back to CSV if Parquet fails, and returns the output directory path.
-
----
-
-## Data Cleaning
-
-### `clean_col(df, col_name, apply_norm=True, apply_strip_pubmed=True, inplace=True)`
-Cleans a single text column by:
-
-- removing PubMed refs  
-- applying column-specific regex extraction  
-- normalizing (unless disabled)  
-- de-duplicating while preserving order  
-- returning tuple-based representations (NaNs become `()`)  
-
-Raises `KeyError` if the column is missing. If no regex is defined for `col_name`,
-the raw string is used.
-
----
-
-### `clean_cols(df, col_names, apply_norms=None, apply_strip_pubmeds=None, inplace=False)`
-Multi-column wrapper for `clean_col`. Defaults to `apply_norm=True` and
-`apply_strip_pubmed=True` per column unless overridden via the provided dicts.
-Raises `KeyError` if any column is absent.
-
----
-
-# Numerical Data Encoding
-
-## `AAChainEmbedder`
-Mean-pooled ESM-2 embeddings for amino-acid sequences.
-
-### Methods
-**`.embed_sequences(seqs, batch_size=32)`**  
-Returns a CPU list of `float32` vectors, one per sequence. Sequences longer than
-the model’s max length are truncated (with a warning). `representation_layer`
-accepts `"last"`, `"second_to_last"`, or an integer index. `model_key` must be one
-of the bundled ESM-2 checkpoints (e.g., `esm2_t6_8M_UR50D`, `esm2_t36_3B_UR50D`).
-
----
-
-## `FreeTXTEmbedder`
-Embeds free-text strings using OpenAI embeddings with:
-
-- RAM LRU cache  
-- SQLite disk cache  
-
-### Methods
-**`.embed_sequences(seqs, batch_size=1000)`**
-
-**Caching details:** caching is enabled only when both `cache_file_path` is set and
-`caching_mode != "NOT_CACHING"`. `CREATE/OVERRIDE` currently behaves like `APPEND`
-and does not wipe an existing DB; delete the file yourself to start fresh. LRU size
-is approximate (KB-based); evicted entries are flushed to SQLite. Models must be
-specified via the provided aliases (`SMALL_OPENAI_MODEL` / `LARGE_OPENAI_MODEL`).
-
----
-
-## `MultiHotEncoder`
-Encodes tuple-based string labels → tuple of integer indices. Raises `ValueError`
-if any entry is not a tuple. Returns both the encoded tuples and the class→index map.
-
----
-
-## `GOEncoder(obo_path)`
-Collapses GO IDs to a chosen depth or auto-selects depth via coverage statistics
-(depth = percentile of observed depths). Unknown GO IDs are skipped. Empty tuples
-become NaN in the returned DataFrame.
-
-Methods include:
-- `encode_go(df, col_name, depth=None, coverage_target=None, inplace=False)`
-- `cut_to_depth(df, col_name, depth, inplace=False, empty_to_nan=True)`
-
----
-
-## `ECEncoder()`
-Collapses EC numbers (depth 1–4) or auto-selects optimal depth based on target density.
-Auto-depth searches {4,3,2,1} for a class count closest to
-`N/examples_per_class` (where `N` is total annotations). Empty tuples become NaN.
-
-Methods include:
-- `encode_ec(df, col_name, depth=None, examples_per_class=30, inplace=False)`
-- `cut_to_depth(df, col_name, depth, inplace=False, empty_to_nan=True)`
-
----
-
-## `embed_freetxt_cols(df, cols, embedder, batch_size=1000, inplace=False)`
-Embeds tuple-of-strings columns using FreeTXTEmbedder; keeps the embedding with the
-largest L2 norm per row. Empty tuples become NaN.
-
----
-
-## `embed_ft_domains(df, embedder, batch_size=128, inplace=False)`
-Extracts 1-based domain ranges from the `Domain [FT]` column, slices the corresponding
-`Sequence` string (stored as a singleton tuple), embeds each subsequence with ESM-2,
-and keeps the domain embedding with the largest L2 norm (empty tuples → NaN).
-
----
-
-## `embed_AAsequences(df, embedder, batch_size=128, inplace=False)`
-Embeds full sequences. Expects the `Sequence` column to contain a tuple with the raw
-sequence as its first element; empty tuples become NaN.
-
----
-
-## Convenience wrappers
-
-### `encode_go(df, col_name, depth=None, coverage_target=None, inplace=False)`
-Bound to the packaged GO DAG (`dependencies/go-basic.obo`). Returns `(df, class_labels)`
-where `class_labels` maps GO term → index.
-
-### `encode_ec(df, col_name, depth=None, examples_per_class=30, inplace=False)`
-Wrapper around `ECEncoder.encode_ec`. Returns `(df, class_labels)` with EC code → index.
-
-### `encode_multihot(df, col, inplace=False)`
-One-shot wrapper around `MultiHotEncoder`. Returns `(df, class_labels)`.
-
----
-
-# Data Persistence
-
-## `save_df(df, pth, metadata=None)`
-Saves a heterogeneous DataFrame into a single **Zarr ZipStore**:
-
-- strings → fixed-width ASCII  
-- int-tuples → (flat array, offsets)  
-- vectors → 2-D float32 arrays
-
-Requires an `Entry` column of strings and a `.zip` path (raises `ValueError` otherwise).
-Rows are sorted by `Entry` before writing. Columns that are completely empty are
-tagged with `is_empty=True` in the store metadata. Unsupported dtypes raise `ValueError`.
-
----
-
-## `load_df(path)`
-Reconstructs the DataFrame saved via `save_df`. Appends `.zip` if missing in `path`,
-restores ASCII strings and tuples/arrays, attaches stored attributes, and raises
-`ValueError` on unknown column layouts. Columns are sorted alphabetically on load.
-
----
-
-# Miscellaneous
-
-## `empty_tuples_to_NaNs(df, inplace=False)`
-Replaces all `()` with `np.nan`.
-
----
-
-## util
-
-### `files_from(dir_path, pattern=None)`  
-Yields sorted filenames matching a regex pattern.
-
-### `compose(*funcs)`  
-Function composition that threads a value through the provided callables. The
-returned wrapper expects per-function positional args keyed by the callable objects
-(`fun_args_map[fn]`); as written this helper is not used elsewhere and will need
-adjustment before practical use.
-
-### `suppress_warnings(*warning_types)`  
-Decorator for temporarily disabling warnings.
-
----
-
-# 5. PyG InMemory Dataset Interface
-
-The graph data interface lives at:
-
-- `src/M2F/pyg_data_interfaces.py`
-
-It currently provides:
-- `DatasetInput`: validated input contract for raw graph files + UniProt query config
-- `ProteinGraphInMemoryDataset`: complete end-to-end PyG in-memory dataset pipeline
-
-`ProteinGraphOnDiskDataset` has been removed from the codebase.
-
-Important:
-- this module is **not** exported from `M2F/__init__.py`
-- import directly: `from M2F.pyg_data_interfaces import DatasetInput, ProteinGraphInMemoryDataset`
-
-`ProteinGraphInMemoryDataset` pipeline:
-1. `download()` queries UniProt for requested fields and writes `raw/features.csv`, then materializes index/edge files into `raw/`.
-2. `process()` aligns index rows with features by accession, applies dataset-level `pre_transform`, applies dataset-level `pre_filter`, drops rows missing required `X`/`Y`, and reindexes node ids.
-3. Builds `x`, `y`, `edge_index`, and flexible-dimensional `edge_attr`, then stores one `Data` object in `processed/data.pt`.
-
-Raw edge chunks must contain a destination column (default `j`); all other columns can be used as edge attributes.
-
----
-
-# 6. Extending M2F
-
-- **New free-text column?**  
-  Add regex to `AVAILABLE_EXTRACTION_PATTERNS`, run through `clean_cols`, then embed via `embed_freetxt_cols`.
-
-- **New ontology?**  
-  Subclass `MultiHotEncoder` with collapse-to-depth logic.
-
-- **Different sequence model?**  
-  Clone `AAChainEmbedder` and swap HF repo while keeping pooling semantics.
-
-- **Custom serialization?**  
-  Mirror `save_df` / `load_df`.
-
----
-
-# 7. Examples
-
-## Data Mining
-
 ```python
-import M2F
-import pandas as pd
-import os
+import logging
+from M2F import configure_logging
 
-gene_fam_data = "/path/to/humann/files"
-
-# note '_' because UniClust IDs also returned
-unirefs, _ = M2F.extract_accessions_from_humann(gene_fam_data)
-
-df = M2F.fetch_uniprotkb_fields(
-    unirefs,
-    fields=["accession", "ft_domain", "cc_function", "go_f", "go_p", "sequence"],
-    request_size=100,
-    max_retry=5
+configure_logging(
+    logs_dir="logs",
+    file_level=logging.DEBUG,
+    console_level=logging.INFO,
 )
-
-df.to_csv("my_uniprot_data.csv")
 ```
 
-## Cleaning & Feature Engineering
-```python
-import M2F
-import pandas as pd
-import os
+## CI Workflows
 
-col_names = [
-    "Domain [FT]",
-    "Gene Ontology (molecular function)",
-    "Gene Ontology (biological process)",
-    "Function [CC]",
-    "Sequence"
-]
+- `/.github/workflows/test.yml`: multi-version test matrix (3.11, 3.12)
+- `/.github/workflows/build.yml`: test + build distribution artifacts (`sdist`, wheel)
 
-apply_norms = {
-    "Domain [FT]": False,
-    "Gene Ontology (molecular function)": False,
-    "Gene Ontology (biological process)": False,
-    "Function [CC]": True,
-    "Sequence": False
-}
+## Repository Layout
 
-aa_embedder = M2F.AAChainEmbedder(model_key="esm2_t6_8M_UR50D", device="cuda:0")
-txt_embedder = M2F.FreeTXTEmbedder(
-    api_key="my-openai-api-key",
-    model="LARGE_OPENAI_MODEL",
-    cache_file_path="example.db",
-    caching_mode="CREATE/OVERRIDE",
-    max_cache_size_kb=20000
-)
+- `src/M2F`: package code
+- `tests`: unit tests
+- `model_notebooks`: active notebooks
+- `legacy_code_examples`: old examples
+- `docs.md`: detailed technical guide
 
-def process_df_inplace(df, *, col_names, apply_norms):
-    M2F.clean_cols(df, col_names=col_names, apply_norms=apply_norms, inplace=True)
+## Detailed Documentation
 
-    M2F.embed_ft_domains(df, aa_embedder, inplace=True)
-    M2F.embed_AAsequences(df, aa_embedder, inplace=True)
-    M2F.embed_freetxt_cols(df, ["Function [CC]"], txt_embedder, inplace=True)
-
-    _, gomf_meta = M2F.encode_go(
-        df, "Gene Ontology (molecular function)", coverage_target=0.8, inplace=True
-    )
-    _, gobp_meta = M2F.encode_go(
-        df, "Gene Ontology (biological process)", coverage_target=0.8, inplace=True
-    )
-
-    return {"gomf_meta": gomf_meta, "gobp_meta": gobp_meta}
-
-for file in M2F.util.files_from("/path/to/input/dir"):
-    file_name = os.path.basename(file)
-    out_pth = os.path.join("/path/to/output/dir", file_name.replace(".csv", ".zip"))
-
-    df = pd.read_csv(file)
-    meta = process_df_inplace(df, col_names=col_names, apply_norms=apply_norms)
-
-    M2F.save_df(df, out_pth, metadata=meta)
-```
+For full API behavior, data contracts, and extended cookbook usage, see:
+- [`docs.md`](docs.md)

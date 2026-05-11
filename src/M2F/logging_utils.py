@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
+_logger = logging.getLogger(__name__)
+
 
 def configure_logging(
     logs_dir: str,
@@ -19,6 +21,7 @@ def configure_logging(
     """
     root = logging.getLogger()
     if root.handlers:
+        _logger.debug("Root logger already configured; skipping configure_logging.")
         return
 
     os.makedirs(logs_dir, exist_ok=True)
@@ -47,6 +50,13 @@ def configure_logging(
     root.setLevel(min(file_level, console_level))
     root.addHandler(file_h)
     root.addHandler(console_h)
+    _logger.info(
+        "Logging configured (logs_dir=%s, file_level=%s, console_level=%s, logfile=%s)",
+        logs_dir,
+        logging.getLevelName(file_level),
+        logging.getLevelName(console_level),
+        logfile,
+    )
 
 
 __all__ = ["configure_logging"]

@@ -107,6 +107,12 @@ def save_df(df: pd.DataFrame, pth: str, metadata: Optional[dict] = None) -> None
 
     # ---------define-helpers---------
     def encode_strings(strings: np.ndarray) -> Tuple[str, np.ndarray]:
+        """
+        Execute `encode strings`.
+
+        Args:
+            strings: Input value for `strings`.
+        """
         max_len = max(len(s) for s in strings)
         # dtype='S⟨max_len⟩' == “fixed-length bytes” (1 byte per char)
         dtype = f"S{max_len}"
@@ -114,13 +120,19 @@ def save_df(df: pd.DataFrame, pth: str, metadata: Optional[dict] = None) -> None
         return dtype, data
 
     def flatten_offset(tuples: tuple) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Execute `flatten offset`.
+
+        Args:
+            tuples: Input value for `tuples`.
+        """
         flat_vals = np.fromiter((x for tup in tuples for x in tup), dtype='int32')
         lengths = np.array([len(t) for t in tuples], dtype='int32')
         # offsets assume an extra entry at end for slicing convenience
         offsets = np.empty(len(tuples)+1, dtype='int32')
         offsets[0] = 0
         np.cumsum(lengths, out=offsets[1:])
-        return np.array(flat_vals, dtype=np.uint16), np.array(offsets, dtype=np.uint16)
+        return np.array(flat_vals, dtype=np.int32), np.array(offsets, dtype=np.int32)
     # --------------------------------
 
     _logger.info(f"Saving DataFrame with {df.shape[0]} rows and {df.shape[1]} columns to {pth}")
@@ -197,51 +209,57 @@ def load_df(path: str) -> pd.DataFrame:
     if not path.endswith(".zip"):
         path += ".zip"
     _logger.info(f"Loading DataFrame from {path}")
-    store = zarr.storage.ZipStore(path, mode="r")
-    root = zarr.open_group(store, mode="r")
+    with zarr.storage.ZipStore(path, mode="r") as store:
+        root = zarr.open_group(store, mode="r")
 
-    def decode_strings(b: np.ndarray) -> np.ndarray:
-        return np.char.decode(b, encoding="ascii")
+        def decode_strings(b: np.ndarray) -> np.ndarray:
+            """
+            Execute `decode strings`.
 
-    full_acc = decode_strings(root["accessions"][:])
-    df = pd.DataFrame({"Entry": full_acc})
+            Args:
+                b: Input value for `b`.
+            """
+            return np.char.decode(b, encoding="ascii")
 
-    for col_name in root.group_keys():
-        _logger.debug(f"Loading {col_name} data")
-        grp = root[col_name]
-        is_empty = grp.attrs.get("is_empty")
+        full_acc = decode_strings(root["accessions"][:])
+        df = pd.DataFrame({"Entry": full_acc})
 
-        if is_empty:
-            df[col_name] = np.nan
-            continue
+        for col_name in root.group_keys():
+            _logger.debug(f"Loading {col_name} data")
+            grp = root[col_name]
+            is_empty = grp.attrs.get("is_empty")
 
-        col_acc = decode_strings(grp["accessions"][:])
+            if is_empty:
+                df[col_name] = np.nan
+                continue
 
-        if {"flat_vals", "offsets"} <= set(grp.array_keys()):
-            flat = grp["flat_vals"][:].astype(int)
-            offs = grp["offsets"][:].astype(int)
-            values = [
-                tuple(flat[offs[i]:offs[i + 1]])
-                for i in range(len(col_acc))
-            ]
+            col_acc = decode_strings(grp["accessions"][:])
 
-        elif "data" in grp.array_keys():
-            data   = grp["data"][:].astype(np.float32)
-            values = [row for row in data]
+            if {"flat_vals", "offsets"} <= set(grp.array_keys()):
+                flat = grp["flat_vals"][:].astype(int)
+                offs = grp["offsets"][:].astype(int)
+                values = [
+                    tuple(flat[offs[i]:offs[i + 1]])
+                    for i in range(len(col_acc))
+                ]
 
-        else:
-            raise ValueError(
-                f"Unknown layout in column '{col_name}': {grp.array_keys()}"
-            )
+            elif "data" in grp.array_keys():
+                data   = grp["data"][:].astype(np.float32)
+                values = [row for row in data]
 
-        mapping = dict(zip(col_acc, values))
-        df[col_name] = df["Entry"].map(mapping)
+            else:
+                raise ValueError(
+                    f"Unknown layout in column '{col_name}': {grp.array_keys()}"
+                )
 
-    df.attrs.update(dict(root.attrs))
-    df.sort_index(axis=1, inplace=True)
-    _logger.info(f"Loaded DataFrame with {df.shape[0]} rows and {df.shape[1]} columns from {path}")
+            mapping = dict(zip(col_acc, values))
+            df[col_name] = df["Entry"].map(mapping)
 
-    return df
+        df.attrs.update(dict(root.attrs))
+        df.sort_index(axis=1, inplace=True)
+        _logger.info(f"Loaded DataFrame with {df.shape[0]} rows and {df.shape[1]} columns from {path}")
+
+        return df
 
 def empty_tuples_to_NaNs(df: pd.DataFrame, inplace=False) -> pd.DataFrame:
     """

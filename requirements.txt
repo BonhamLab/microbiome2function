@@ -55,6 +55,7 @@ sympy==1.14.0
 threadpoolctl==3.6.0
 tokenizers==0.21.4
 torch==2.8.0
+torch-geometric==2.7.0
 tqdm==4.67.1
 transformers==4.55.0
 typing-inspection==0.4.1

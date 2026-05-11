@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microbiome2function"
+version = "0.1.0"
+description = "Microbiome-to-function feature engineering and graph/FFNN training toolkit."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+authors = [
+  { name = "BonhamLab" }
+]
+license = { text = "Proprietary" }
+keywords = ["microbiome", "protein", "gnn", "ffnn", "bioinformatics"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent"
+]
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+M2F = ["dependencies/*.obo"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
