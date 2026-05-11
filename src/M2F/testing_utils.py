@@ -1,8 +1,12 @@
+import logging
 import torch
+
+_logger = logging.getLogger(__name__)
 
 
 def accuracy(logits, y_true, mask, threshold=0.5):
     if mask.sum() == 0:
+        _logger.debug("accuracy(): empty mask, returning 0.0")
         return 0.0
     probs = torch.sigmoid(logits[mask])
     preds = (probs >= threshold).float()
@@ -11,6 +15,7 @@ def accuracy(logits, y_true, mask, threshold=0.5):
 
 def recall(logits, y_true, mask, threshold=0.5, eps=1e-8):
     if mask.sum() == 0:
+        _logger.debug("recall(): empty mask, returning 0.0")
         return 0.0
     probs = torch.sigmoid(logits[mask])
     preds = (probs >= threshold).float()
@@ -22,6 +27,7 @@ def recall(logits, y_true, mask, threshold=0.5, eps=1e-8):
 
 def precision(logits, y_true, mask, threshold=0.5, eps=1e-8):
     if mask.sum() == 0:
+        _logger.debug("precision(): empty mask, returning 0.0")
         return 0.0
     probs = torch.sigmoid(logits[mask])
     preds = (probs >= threshold).float()
@@ -33,6 +39,7 @@ def precision(logits, y_true, mask, threshold=0.5, eps=1e-8):
 
 def f1(logits, y_true, mask, threshold=0.5, eps=1e-8):
     if mask.sum() == 0:
+        _logger.debug("f1(): empty mask, returning 0.0")
         return 0.0
     probs = torch.sigmoid(logits[mask])
     preds = (probs >= threshold).float()

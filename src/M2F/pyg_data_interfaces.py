@@ -307,10 +307,13 @@ def build_topology_from_DatasetInput(
     edge_src: list[np.ndarray] = []
     edge_dst: list[np.ndarray] = []
     edge_attr_blocks: list[np.ndarray] = []
+    processed_chunks = 0
+    kept_directed_edges = 0
     edge_paths = [
         Path(p)
         for p in util.files_from(str(csv_dir), edge_csv_file_name_pattern)
     ]
+    _logger.info("Building topology from %d edge shard(s) in %s", len(edge_paths), csv_dir)
     # ----------------------------------------------------------------
 
     # --------- get configured edge attrs or infer from files --------
@@ -324,6 +327,11 @@ def build_topology_from_DatasetInput(
                 # inferred from all non-dst columns
                 if col != edge_dst_column and col not in edge_attr_cols:
                     edge_attr_cols.append(col)
+    _logger.debug(
+        "Using %d edge attribute column(s): %s",
+        len(edge_attr_cols),
+        edge_attr_cols[:10],
+    )
     # ----------------------------------------------------------------
 
     # --- process individual edge sets pruning out filtered nodes ----
@@ -364,6 +372,8 @@ def build_topology_from_DatasetInput(
         keep_edges = dst_mapped >= 0 # use it throw away -1 entries down the road
         if not keep_edges.any():
             continue
+        processed_chunks += 1
+        kept_directed_edges += int(keep_edges.sum())
         # src_arr is just [src_new, src_new, ..., src_new] repeated once per kept edge
         src_arr = np.full(keep_edges.sum(), src_new, dtype=np.int64) # note keep_edges is a binary array
         dst_arr = dst_mapped[keep_edges] # is the mapped destination ids
@@ -395,6 +405,13 @@ def build_topology_from_DatasetInput(
     else:
         edge_index_np = np.empty((2, 0), dtype=np.int64)
         edge_attr_np = np.empty((0, len(edge_attr_cols)), dtype=np.float32)
+    _logger.info(
+        "Built topology: kept_chunks=%d directed_edges=%d stored_edges=%d edge_attr_dim=%d",
+        processed_chunks,
+        kept_directed_edges,
+        int(edge_index_np.shape[1]),
+        int(edge_attr_np.shape[1]),
+    )
     
     return edge_index_np, edge_attr_np, tuple(edge_attr_cols)
     # ----------------------------------------------------------------
@@ -409,9 +426,20 @@ def build_features_from_DatasetInput(
         global_id_map: np.ndarray,
         X_return_field_names: list[str] | tuple[str, ...],
         Y_return_field_name: str) -> tuple[np.ndarray, np.ndarray]:
+    _logger.info(
+        "Building features from shard %s using accession index %s",
+        features_path,
+        accessions_path,
+    )
     # ------------------------ read the data -------------------------
     accessions_df = pd.read_csv(accessions_path)
     features_df = pd.read_csv(features_path)
+    _logger.debug(
+        "Loaded accession rows=%d and feature rows=%d from shard %s",
+        int(accessions_df.shape[0]),
+        int(features_df.shape[0]),
+        features_path,
+    )
     # ----------------------------------------------------------------
 
     # ------------- align features with graph node order -------------
@@ -437,6 +465,7 @@ def build_features_from_DatasetInput(
     index_df["Entry"] = index_df["uniref"].astype(str).str.replace("UniRef90_", "", regex=False)
     index_df["_orig_node_id"] = index_df["i"].astype(np.int64) - 1
     node_df = index_df.merge(features_df, on="Entry", how="left", sort=False)
+    _logger.debug("Merged shard into node table with %d row(s)", int(node_df.shape[0]))
     # ----------------------------------------------------------------
 
     # ---------------------- transform the table ---------------------
@@ -466,9 +495,16 @@ def build_features_from_DatasetInput(
 
     keep_mask &= ~node_df.loc[:, required_cols].isna().any(axis=1)
     node_df = node_df[keep_mask].copy()
+    _logger.info(
+        "Shard %s kept %d/%d node row(s) after filters",
+        features_path,
+        int(node_df.shape[0]),
+        int(index_df.shape[0]),
+    )
     # ----------------------------------------------------------------
 
     if node_df.empty:
+        _logger.info("Shard %s produced no usable rows after filtering", features_path)
         return (
             np.empty((0, 0), dtype=np.float32),
             np.empty((0, 0), dtype=np.float32),
@@ -489,6 +525,13 @@ def build_features_from_DatasetInput(
     next_new_id = int(global_id_map.max()) + 1 if global_id_map.size else 0
     new_ids = np.arange(next_new_id, next_new_id + old_ids.shape[0], dtype=np.int64)
     global_id_map[old_ids] = new_ids
+    _logger.debug(
+        "Assigned %d global node id(s) for shard %s (new_id_range=[%d,%d])",
+        int(old_ids.shape[0]),
+        features_path,
+        int(new_ids[0]),
+        int(new_ids[-1]),
+    )
     # ----------------------------------------------------------------
 
     # ------------------------ build X and Y -------------------------
@@ -520,6 +563,12 @@ def build_features_from_DatasetInput(
     else:
         y = np.empty((0, 0), dtype=np.float32)
 
+    _logger.info(
+        "Built feature tensors for shard %s: x_shape=%s y_shape=%s",
+        features_path,
+        tuple(x.shape),
+        tuple(y.shape),
+    )
     return x, y
     # ----------------------------------------------------------------
 
@@ -595,7 +644,13 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         raw_dir = Path(self.raw_dir)
         raw_dir.mkdir(parents=True, exist_ok=True)
         features_path = raw_dir / "features.csv"
+        _logger.info("Preparing raw data for ProteinGraphInMemoryDataset at %s", raw_dir)
         if not features_path.exists():
+            _logger.info(
+                "Fetching UniProt features for %d accession(s) into %s",
+                len(self.original_node_accessions),
+                features_path,
+            )
             fetched_features = fetch_uniprotkb_fields(
                         uniref_ids=self.original_node_accessions,
                         fields=[self.dataset_input.Y_query_field_name, *self.dataset_input.X_query_field_names],
@@ -604,14 +659,19 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
                         max_retry=self.dataset_input.max_retry
                     )
             fetched_features.to_csv(features_path, index=False)
+        else:
+            _logger.debug("Reusing existing raw feature file at %s", features_path)
 
         # put index + edge files into raw/ so raw_file_names is satisfied
         self._materialize(
             self.dataset_input.path_to_accession_ids_csv_file,
             raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name,
         )
+        edge_count = 0
         for edge_path in self.dataset_input.edge_csv_paths:
             self._materialize(edge_path, raw_dir / edge_path.name)
+            edge_count += 1
+        _logger.debug("Materialized accession index and %d edge shard(s) into raw dir", edge_count)
 
     @staticmethod
     def _to_tensor(value: Any, *, field_name: str, cast_float: bool = True) -> torch.Tensor:
@@ -623,6 +683,7 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         raw_dir = Path(self.raw_dir)
         features_path = raw_dir / "features.csv"
         accessions_path = raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
+        _logger.info("Processing ProteinGraphInMemoryDataset from %s", raw_dir)
         if not features_path.exists():
             raise FileNotFoundError(f"Expected raw features at {features_path}")
         if not accessions_path.exists():
@@ -648,6 +709,12 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
 
         if x_np.shape[0] == 0:
             raise ValueError("All nodes were filtered out; cannot build dataset")
+        _logger.info(
+            "Feature build complete: nodes=%d x_dim=%d y_dim=%d",
+            int(x_np.shape[0]),
+            int(x_np.shape[1]),
+            int(y_np.shape[1]) if y_np.ndim > 1 else 1,
+        )
 
         x = torch.from_numpy(x_np).float()
         y = torch.from_numpy(y_np).float()
@@ -665,6 +732,11 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
             edge_attr_columns=self.dataset_input.edge_attr_columns,
             chunk_name_pattern=chunk_name_pattern,
             edge_dst_column=self.dataset_input.edge_dst_column,
+        )
+        _logger.info(
+            "Topology build complete: edges=%d edge_attr_dim=%d",
+            int(edge_index_np.shape[1]),
+            int(edge_attr_np.shape[1]),
         )
         edge_index = torch.from_numpy(edge_index_np).long()
         edge_attr = torch.from_numpy(edge_attr_np).float()
@@ -703,6 +775,12 @@ class ProteinGraphInMemoryDataset(InMemoryDataset):
         test_set_size = floor(self.test_set_size * total_samples)
         data_split_transform = RandomNodeSplit(num_val=val_set_size, num_test=test_set_size)
         split_data = data_split_transform(data)
+        _logger.debug(
+            "Split sizes: train=%d val=%d test=%d",
+            int(split_data.train_mask.sum().item()),
+            int(split_data.val_mask.sum().item()),
+            int(split_data.test_mask.sum().item()),
+        )
         # ----------------------------------------------------------------
 
         torch.save(self.collate([split_data]), self.processed_paths[0])
@@ -786,6 +864,12 @@ class _ProteinFeatureStore(FeatureStore):
             "y": (0, *target_feature_dim),
             "edge_attr": (0, *edge_feature_dim),
         }
+        _logger.debug(
+            "Initialized _ProteinFeatureStore(path=%s, read_only=%s, default_shapes=%s)",
+            store_on_disk_location,
+            read_only,
+            self._default_feature_shapes,
+        )
 
         if not self._read_only:
             existing = self.store.which_tensors
@@ -829,6 +913,7 @@ class _ProteinFeatureStore(FeatureStore):
         if self._is_full_index(index):
             self._ensure_location_for_replace(attr, data)
             self.store.add_data_to_location(data, TensorAttr(attr.group_name, name, slice(None)))
+            _logger.debug("Replaced tensor '%s' with shape=%s", name, tuple(data.shape))
             return True
 
         if name not in self.store.which_tensors:
@@ -837,6 +922,7 @@ class _ProteinFeatureStore(FeatureStore):
                 "or `append_tensor(...)` for streaming growth."
             )
         self.store.add_data_to_location(data, attr)
+        _logger.debug("Updated tensor '%s' at index=%s with shape=%s", name, attr.index, tuple(data.shape))
         return True
 
     def append_tensor(self, tensor: torch.Tensor | np.ndarray, *args, **kwargs) -> slice:
@@ -861,7 +947,9 @@ class _ProteinFeatureStore(FeatureStore):
                 init_shape = (0, *data.shape[1:])
             self.store.add_location(TensorAttr(attr.group_name, name, None), init_shape, dtype=data.dtype)
 
-        return self.store.append(data, TensorAttr(attr.group_name, name, None))
+        out = self.store.append(data, TensorAttr(attr.group_name, name, None))
+        _logger.debug("Appended tensor '%s' with shape=%s at slice=%s", name, tuple(data.shape), out)
+        return out
 
     def _get_tensor(self, attr: TensorAttr) -> Optional[torch.Tensor]:
         name = self._require_attr_name(attr)
@@ -879,9 +967,12 @@ class _ProteinFeatureStore(FeatureStore):
             return False
 
         if self._is_full_index(attr.index):
-            return self.store.drop_location(attr)
+            deleted = self.store.drop_location(attr)
+            _logger.debug("Dropped full tensor '%s' (deleted=%s)", name, deleted)
+            return deleted
 
         self.store.remove_data_from_location(attr)
+        _logger.debug("Marked entries removed in tensor '%s' at index=%s", name, attr.index)
         return True
 
     def _get_tensor_size(self, attr: TensorAttr) -> Optional[tuple[int, ...]]:
@@ -907,6 +998,7 @@ class _ProteinFeatureStore(FeatureStore):
         ]
 
     def close(self) -> None:
+        _logger.debug("Closing _ProteinFeatureStore")
         self.store.close()
 
 
@@ -950,18 +1042,32 @@ class ProteinGraphOnDiskDataset:
         self.val_node_ids: torch.Tensor | None = None
         self.test_node_ids: torch.Tensor | None = None
         self.meta: dict[str, Any] = {}
+        if self.log:
+            _logger.info(
+                "Initializing ProteinGraphOnDiskDataset(root=%s, force_reload=%s, num_feature_batches=%d)",
+                self.root,
+                self.force_reload,
+                self.num_feature_batches,
+            )
 
         if self.force_reload:
+            _logger.info("force_reload=True; clearing existing raw feature batches and processed artifacts")
             if self.features_batches_dir.exists():
                 shutil.rmtree(self.features_batches_dir)
             if self.processed_dir.exists():
                 shutil.rmtree(self.processed_dir)
 
         if not self._raw_ready():
+            _logger.info("Raw artifacts are missing; starting download()")
             self.download()
+        elif self.log:
+            _logger.debug("Raw artifacts are already present; skipping download()")
 
         if self.force_reload or not self._processed_ready():
+            _logger.info("Processed artifacts are missing/stale; starting process()")
             self.process()
+        elif self.log:
+            _logger.debug("Processed artifacts are already present; skipping process()")
 
         self._load_processed()
 
@@ -1074,6 +1180,13 @@ class ProteinGraphOnDiskDataset:
         self.train_node_ids = torch.as_tensor(meta["train_node_ids"]).long()
         self.val_node_ids = torch.as_tensor(meta["val_node_ids"]).long()
         self.test_node_ids = torch.as_tensor(meta["test_node_ids"]).long()
+        if self.log:
+            _logger.info(
+                "Loaded on-disk graph dataset from %s (nodes=%d, edges=%d)",
+                self.processed_dir,
+                int(meta["num_nodes"]),
+                int(meta["num_edges"]),
+            )
 
     @staticmethod
     def _materialize(src: Path, dst: Path) -> None:
@@ -1102,18 +1215,31 @@ class ProteinGraphOnDiskDataset:
             raise ValueError(
                 "No valid UniRef accessions to query after removing UNK/UPI entries."
             )
+        _logger.info(
+            "Downloading feature shards for ProteinGraphOnDiskDataset: accessions=%d batches=%d",
+            len(accessions),
+            self.num_feature_batches,
+        )
         batches = np.array_split(np.asarray(accessions, dtype=object), self.num_feature_batches)
         fields = [self.dataset_input.Y_query_field_name, *self.dataset_input.X_query_field_names]
 
         for i, batch in enumerate(batches, start=1):
             batch_path = self._feature_batch_path(i)
             if batch_path.exists():
+                _logger.debug("Reusing existing feature shard %s", batch_path)
                 continue
 
             batch_ids = [str(x) for x in batch.tolist()]
             if len(batch_ids) == 0:
                 pd.DataFrame(columns=fields).to_csv(batch_path, index=False)
+                _logger.debug("Wrote empty feature shard %s", batch_path)
                 continue
+            _logger.info(
+                "Fetching feature shard %d/%d with %d accession(s)",
+                i,
+                self.num_feature_batches,
+                len(batch_ids),
+            )
             features_df = fetch_uniprotkb_fields(
                 uniref_ids=batch_ids,
                 fields=fields,
@@ -1122,6 +1248,7 @@ class ProteinGraphOnDiskDataset:
                 max_retry=self.dataset_input.max_retry,
             )
             features_df.to_csv(batch_path, index=False)
+            _logger.debug("Saved feature shard %s with %d row(s)", batch_path, int(features_df.shape[0]))
 
     @staticmethod
     def _to_tensor(value: Any, *, field_name: str, cast_float: bool = True) -> torch.Tensor:
@@ -1143,6 +1270,7 @@ class ProteinGraphOnDiskDataset:
     def process(self) -> None:
         # ------------------------- get the paths ------------------------
         accessions_path = self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
+        _logger.info("Processing ProteinGraphOnDiskDataset into %s", self.processed_dir)
         if not accessions_path.exists():
             raise FileNotFoundError(f"Expected accession index at {accessions_path}")
         for i in range(1, self.num_feature_batches + 1):
@@ -1183,6 +1311,7 @@ class ProteinGraphOnDiskDataset:
                 )
 
                 if x_np.shape[0] == 0:
+                    _logger.debug("Feature shard %s produced 0 kept rows; skipping", batch_path)
                     continue
 
                 if feature_store is None:
@@ -1202,10 +1331,20 @@ class ProteinGraphOnDiskDataset:
                 feature_store.append_tensor(x_np, group_name=None, attr_name="x", index=None)
                 feature_store.append_tensor(y_np, group_name=None, attr_name="y", index=None)
                 total_rows += int(x_np.shape[0])
+                _logger.info(
+                    "Processed feature shard %d/%d -> rows=%d x_dim=%d y_dim=%d (total_rows=%d)",
+                    i,
+                    self.num_feature_batches,
+                    int(x_np.shape[0]),
+                    int(x_np.shape[1]),
+                    int(y_np.shape[1]) if y_np.ndim > 1 else 1,
+                    total_rows,
+                )
             # ----------------------------------------------------------------
 
             if feature_store is None or total_rows == 0:
                 raise ValueError("All nodes were filtered out; cannot build on-disk dataset")
+            _logger.info("Feature pass complete: total_nodes=%d", total_rows)
 
             # ---------------------- pass 2: topology ------------------------
             chunk_name_pattern = self.dataset_input.edge_csv_file_name_pattern
@@ -1219,6 +1358,11 @@ class ProteinGraphOnDiskDataset:
                 edge_attr_columns=self.dataset_input.edge_attr_columns,
                 chunk_name_pattern=chunk_name_pattern,
                 edge_dst_column=self.dataset_input.edge_dst_column,
+            )
+            _logger.info(
+                "Topology pass complete: edges=%d edge_attr_dim=%d",
+                int(edge_index_np.shape[1]),
+                int(edge_attr_np.shape[1]),
             )
 
             # Recreate edge_attr location with the inferred dimensionality and append values
@@ -1236,6 +1380,12 @@ class ProteinGraphOnDiskDataset:
             train_node_ids = split.train_mask.nonzero(as_tuple=False).view(-1).long()
             val_node_ids = split.val_mask.nonzero(as_tuple=False).view(-1).long()
             test_node_ids = split.test_mask.nonzero(as_tuple=False).view(-1).long()
+            _logger.debug(
+                "Split sizes: train=%d val=%d test=%d",
+                int(train_node_ids.numel()),
+                int(val_node_ids.numel()),
+                int(test_node_ids.numel()),
+            )
             # ----------------------------------------------------------------
 
             # ---------------------- node metadata map -----------------------
@@ -1335,6 +1485,7 @@ class ProteinGraphOnDiskDataset:
 
     def close(self) -> None:
         if self.feature_store is not None:
+            _logger.debug("Closing ProteinGraphOnDiskDataset feature store")
             self.feature_store.close()
             self.feature_store = None
 
@@ -1410,18 +1561,33 @@ class ProteinDataset(Dataset):
         self.split: Literal["train", "val", "test", "all"] = split
         self.include_targets = bool(split == "train") if include_targets is None else bool(include_targets)
         self.meta: dict[str, Any] = {}
+        if self.log:
+            _logger.info(
+                "Initializing ProteinDataset(root=%s, force_reload=%s, num_feature_batches=%d, split=%s)",
+                self.root,
+                self.force_reload,
+                self.num_feature_batches,
+                split,
+            )
 
         if self.force_reload:
+            _logger.info("force_reload=True; clearing existing raw feature batches and processed_ffnn artifacts")
             if self.features_batches_dir.exists():
                 shutil.rmtree(self.features_batches_dir)
             if self.processed_dir.exists():
                 shutil.rmtree(self.processed_dir)
 
         if not self._raw_ready():
+            _logger.info("Raw artifacts are missing; starting download()")
             self.download()
+        elif self.log:
+            _logger.debug("Raw artifacts are already present; skipping download()")
 
         if self.force_reload or not self._processed_ready():
+            _logger.info("Processed artifacts are missing/stale; starting process()")
             self.process()
+        elif self.log:
+            _logger.debug("Processed artifacts are already present; skipping process()")
 
         self._load_processed()
         self.set_split(split=split, include_targets=include_targets)
@@ -1515,6 +1681,14 @@ class ProteinDataset(Dataset):
         self.val_node_ids = torch.as_tensor(meta["val_node_ids"]).long()
         self.test_node_ids = torch.as_tensor(meta["test_node_ids"]).long()
         self.all_node_ids = torch.arange(int(meta["num_nodes"]), dtype=torch.long)
+        if self.log:
+            _logger.info(
+                "Loaded ProteinDataset from %s (nodes=%d, x_dim=%d, y_dim=%d)",
+                self.processed_dir,
+                int(meta["num_nodes"]),
+                int(meta["x_dim"]),
+                int(meta["y_dim"]),
+            )
 
     @staticmethod
     def _materialize(src: Path, dst: Path) -> None:
@@ -1541,18 +1715,31 @@ class ProteinDataset(Dataset):
             raise ValueError(
                 "No valid UniRef accessions to query after removing UNK/UPI entries."
             )
+        _logger.info(
+            "Downloading feature shards for ProteinDataset: accessions=%d batches=%d",
+            len(accessions),
+            self.num_feature_batches,
+        )
         batches = np.array_split(np.asarray(accessions, dtype=object), self.num_feature_batches)
         fields = [self.dataset_input.Y_query_field_name, *self.dataset_input.X_query_field_names]
 
         for i, batch in enumerate(batches, start=1):
             batch_path = self._feature_batch_path(i)
             if batch_path.exists():
+                _logger.debug("Reusing existing feature shard %s", batch_path)
                 continue
 
             batch_ids = [str(x) for x in batch.tolist()]
             if len(batch_ids) == 0:
                 pd.DataFrame(columns=fields).to_csv(batch_path, index=False)
+                _logger.debug("Wrote empty feature shard %s", batch_path)
                 continue
+            _logger.info(
+                "Fetching feature shard %d/%d with %d accession(s)",
+                i,
+                self.num_feature_batches,
+                len(batch_ids),
+            )
             features_df = fetch_uniprotkb_fields(
                 uniref_ids=batch_ids,
                 fields=fields,
@@ -1561,6 +1748,7 @@ class ProteinDataset(Dataset):
                 max_retry=self.dataset_input.max_retry,
             )
             features_df.to_csv(batch_path, index=False)
+            _logger.debug("Saved feature shard %s with %d row(s)", batch_path, int(features_df.shape[0]))
 
     @staticmethod
     def _to_tensor(value: Any, *, field_name: str, cast_float: bool = True) -> torch.Tensor:
@@ -1570,6 +1758,7 @@ class ProteinDataset(Dataset):
     def process(self) -> None:
         # ------------------------- get the paths ------------------------
         accessions_path = self.raw_dir / self.dataset_input.path_to_accession_ids_csv_file.name
+        _logger.info("Processing ProteinDataset into %s", self.processed_dir)
         if not accessions_path.exists():
             raise FileNotFoundError(f"Expected accession index at {accessions_path}")
         for i in range(1, self.num_feature_batches + 1):
@@ -1610,6 +1799,7 @@ class ProteinDataset(Dataset):
                 )
 
                 if x_np.shape[0] == 0:
+                    _logger.debug("Feature shard %s produced 0 kept rows; skipping", batch_path)
                     continue
 
                 if feature_store is None:
@@ -1629,10 +1819,20 @@ class ProteinDataset(Dataset):
                 feature_store.append_tensor(x_np, group_name=None, attr_name="x", index=None)
                 feature_store.append_tensor(y_np, group_name=None, attr_name="y", index=None)
                 total_rows += int(x_np.shape[0])
+                _logger.info(
+                    "Processed feature shard %d/%d -> rows=%d x_dim=%d y_dim=%d (total_rows=%d)",
+                    i,
+                    self.num_feature_batches,
+                    int(x_np.shape[0]),
+                    int(x_np.shape[1]),
+                    int(y_np.shape[1]) if y_np.ndim > 1 else 1,
+                    total_rows,
+                )
             # ----------------------------------------------------------------
 
             if feature_store is None or total_rows == 0:
                 raise ValueError("All nodes were filtered out; cannot build FFNN dataset")
+            _logger.info("Feature pass complete: total_nodes=%d", total_rows)
 
             # ---------------------------- splits ----------------------------
             y_full = feature_store.get_tensor(TensorAttr(None, "y", slice(None))).float()
@@ -1644,6 +1844,12 @@ class ProteinDataset(Dataset):
             train_node_ids = split.train_mask.nonzero(as_tuple=False).view(-1).long()
             val_node_ids = split.val_mask.nonzero(as_tuple=False).view(-1).long()
             test_node_ids = split.test_mask.nonzero(as_tuple=False).view(-1).long()
+            _logger.debug(
+                "Split sizes: train=%d val=%d test=%d",
+                int(train_node_ids.numel()),
+                int(val_node_ids.numel()),
+                int(test_node_ids.numel()),
+            )
             # ----------------------------------------------------------------
 
             # ---------------------- node metadata map -----------------------
@@ -1718,6 +1924,12 @@ class ProteinDataset(Dataset):
         self.active_node_ids = self._node_ids_for_split(split)
         self.split = split
         self.include_targets = bool(split == "train") if include_targets is None else bool(include_targets)
+        _logger.debug(
+            "Activated ProteinDataset split='%s' include_targets=%s size=%d",
+            split,
+            self.include_targets,
+            int(self.active_node_ids.numel()),
+        )
         return self
 
     def _getitem_by_node_id(self, node_id: int, *, include_targets: bool):
@@ -1819,6 +2031,7 @@ class ProteinDataset(Dataset):
 
     def close(self) -> None:
         if self.feature_store is not None:
+            _logger.debug("Closing ProteinDataset feature store")
             self.feature_store.close()
             self.feature_store = None
 

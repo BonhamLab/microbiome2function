@@ -13,9 +13,12 @@ import re
 import os
 import warnings
 import functools
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Type
+
+_logger = logging.getLogger(__name__)
 
 
 def files_from(dir_path: str, pattern: re.Pattern = None):
@@ -54,10 +57,18 @@ class ZarrFeatureStore:
                 store_on_disk_location: Path | str,
                 read_only: bool = False):
         self.read_only = read_only
+        self.store_path = Path(store_on_disk_location)
+        store_exists = self._zarr_is_store(store_on_disk_location)
+        _logger.debug(
+            "Initializing ZarrFeatureStore(path=%s, read_only=%s, existing_store=%s)",
+            self.store_path,
+            read_only,
+            store_exists,
+        )
         self.store, self.root = (
                 self._zarr_load_store(store_on_disk_location, read_only=read_only) 
             if 
-                self._zarr_is_store(store_on_disk_location)
+                store_exists
             else 
                 self._zarr_create_store(store_on_disk_location, read_only=read_only)
         )
@@ -216,6 +227,13 @@ class ZarrFeatureStore:
         self.root.create_array(name, shape=shape, dtype=dtype)
         # Mask tracks logical liveness along the first axis only
         self.root.create_array(mask_name, data=np.zeros(shape[0], dtype=np.bool_))
+        _logger.debug(
+            "Created tensor location '%s' with shape=%s dtype=%s (overwrite=%s)",
+            name,
+            shape,
+            str(dtype),
+            overwrite,
+        )
 
     def add_data_to_location(self, data: ndarray, attr: TensorAttr):
         name = self._tensor_name(attr)
@@ -229,6 +247,12 @@ class ZarrFeatureStore:
             raise ValueError(
                 f"Could not write data to '{name}' at index {index}: {e}"
             ) from e
+        _logger.debug(
+            "Wrote data to '%s' at index=%s with data_shape=%s",
+            name,
+            index,
+            data.shape,
+        )
     
     def read_data_from_location(self, attr: TensorAttr) -> ndarray:
         name = self._tensor_name(attr)
@@ -246,11 +270,13 @@ class ZarrFeatureStore:
         index = self._tensor_index(attr) # indexing is expected along the leading axis only
         mask = self._mask_of(name)
         mask[index] = False
+        _logger.debug("Marked entries as deleted in '%s' at index=%s", name, index)
 
     def clear_location(self, attr: TensorAttr):
         name = self._tensor_name(attr)
         mask = self._mask_of(name)
         mask[...] = False
+        _logger.debug("Cleared liveness mask for '%s'", name)
 
     def append(self, data: ndarray, attr: TensorAttr) -> slice:
         name = self._tensor_name(attr)
@@ -282,7 +308,15 @@ class ZarrFeatureStore:
         arr[old_n:new_n] = data
         mask[old_n:new_n] = True
 
-        return slice(old_n, new_n) # the newly appended block
+        out = slice(old_n, new_n) # the newly appended block
+        _logger.debug(
+            "Appended %d row(s) to '%s' (old_n=%d, new_n=%d)",
+            batch_n,
+            name,
+            old_n,
+            new_n,
+        )
+        return out
 
     def drop_location(self, attr: TensorAttr) -> bool:
         name = self._tensor_name(attr)
@@ -292,9 +326,11 @@ class ZarrFeatureStore:
             if node_name in self.root:
                 del self.root[node_name]
                 deleted_any = True
+        _logger.debug("Dropped tensor location '%s' (deleted_any=%s)", name, deleted_any)
         return deleted_any
 
     def close(self):
+        _logger.debug("Closing ZarrFeatureStore at %s", self.store_path)
         self.store.close()
     
     def __enter__(self):

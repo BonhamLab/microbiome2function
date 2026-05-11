@@ -139,6 +139,14 @@ class GraphConvNodeClassifier(Module):
 
         device = next(self.parameters()).device # note, need to take `next` of `self.parameters()` because it is an iterator
         criterion = torch.nn.BCEWithLogitsLoss()
+        _logger.info(
+            "Starting GNN fit (epochs=%d, early_stopping=%s, tolerance=%d, device=%s, save_dir=%s)",
+            epochs,
+            early_stopping,
+            tolerance,
+            device,
+            save_model_to,
+        )
 
         # ------------------------------- optimizer -------------------------------
         if optimizer is None:
@@ -247,6 +255,12 @@ class GraphConvNodeClassifier(Module):
                 no_generalization_after = 0
                 best_model_path = save_model_to / f"m2f_gnn_{current_time()}.pt"
                 torch.save(self.state_dict(), best_model_path)
+                _logger.debug(
+                    "New best validation loss %.6f at epoch %d; saved checkpoint to %s",
+                    best_val_loss,
+                    epoch,
+                    best_model_path,
+                )
             else:
                 no_generalization_after += 1
 
@@ -275,15 +289,23 @@ class GraphConvNodeClassifier(Module):
                 break
             # -------------------------------------------------------------------
 
-        return {
+        out = {
             "best_val_loss": best_val_loss,
             "best_model_path": str(best_model_path) if best_model_path is not None else None,
             "history": history,
         }
+        _logger.info(
+            "Finished GNN fit (epochs_ran=%d, best_val_loss=%.6f, best_model_path=%s)",
+            len(history),
+            best_val_loss,
+            out["best_model_path"],
+        )
+        return out
 
     def test(self, test: NeighborLoader, *, threshold: float = 0.5) -> dict[str, float]:
         device = next(self.parameters()).device
         criterion = torch.nn.BCEWithLogitsLoss()
+        _logger.info("Starting GNN test (threshold=%.3f, device=%s)", threshold, device)
 
         self.eval()
         test_loss_sum = 0.0
