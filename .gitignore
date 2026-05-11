@@ -38,3 +38,7 @@
 !legacy_code_examples/data_mining/*.py
 !legacy_code_examples/data_mining/*.ipynb
 !legacy_code_examples/data_mining/*.sh
+
+# Tests
+!tests/
+!tests/*.py
