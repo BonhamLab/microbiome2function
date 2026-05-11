@@ -50,7 +50,14 @@ def compose(*funcs):
             fun_args_map: Input value for `fun_args_map`.
         """
         for f in funcs:
-            args = fun_args_map[f]
+            if f in fun_args_map:
+                args = fun_args_map[f]
+            else:
+                args = fun_args_map.get(f.__name__, ())
+            if not isinstance(args, (tuple, list)):
+                raise TypeError(
+                    f"Arguments for function '{f.__name__}' must be a tuple/list, got {type(args)}"
+                )
             x = f(x, *args)
         return x
     return inner

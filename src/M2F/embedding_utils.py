@@ -298,6 +298,8 @@ class FreeTXTEmbedder:
                     vec BLOB 
                 )
             """)
+            if caching_mode == "CREATE/OVERRIDE":
+                self._db.execute("DELETE FROM embeddings")
             self._conn.commit()
             atexit.register(self._flush_and_close)
             self._LRU_cache = OrderedDict()
@@ -331,6 +333,10 @@ class FreeTXTEmbedder:
             self._conn.commit()
 
         self._conn.close()
+        self._db = None
+        self._conn = None
+        self._LRU_cache = None
+        self._LRU_cache_size_kb = 0
 
     def __db_lookup(self, s: str):
         """
@@ -446,10 +452,10 @@ class FreeTXTEmbedder:
             except KeyError as e:
                 if self._LRU_cache_size_kb == 0.0:
                     _logger.warning("Item size is bigger than the LRU cache capacity "
-                                    f"{item_size} > {self._LRU_cache_size_kb}. "
+                                    f"{item_size} > {self.max_cache_size_kb}. "
                                     "Consider increasing the cache capacity."
                                     "If not, expect slower performance due to in-disk cache lookup overhead.")
-                    self.__store_in_DB(old_s, old_emb)
+                    self.__store_in_DB(s, emb)
                 else:
                     raise KeyError(e)
                 return 
@@ -872,7 +878,8 @@ __all__ = [
     "FreeTXTEmbedder",
     "AAChainEmbedder",
     "ECEncoder",
-    "get_GODag"
+    "encode_multihot",
+    "get_GODag",
 ]
 
 if __name__ == "__main__":

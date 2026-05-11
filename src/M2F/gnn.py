@@ -219,6 +219,10 @@ class GraphConvNodeClassifier(Module):
         """
         if epochs < 1:
             raise ValueError("`epochs` must be >= 1")
+        if report_performance_every_kth_epoch < 1:
+            raise ValueError("`report_performance_every_kth_epoch` must be >= 1")
+        if tolerance < 0:
+            raise ValueError("`tolerance` must be >= 0")
 
         k = report_performance_every_kth_epoch
         save_model_to = Path(save_model_to if save_model_to is not None else os.getcwd())
@@ -442,7 +446,8 @@ class GraphConvNodeClassifier(Module):
 
 
 __all__ = [
-
+    "GraphConv",
+    "GraphConvNodeClassifier",
 ]
 
 

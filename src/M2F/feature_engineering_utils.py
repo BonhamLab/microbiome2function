@@ -132,7 +132,7 @@ def save_df(df: pd.DataFrame, pth: str, metadata: Optional[dict] = None) -> None
         offsets = np.empty(len(tuples)+1, dtype='int32')
         offsets[0] = 0
         np.cumsum(lengths, out=offsets[1:])
-        return np.array(flat_vals, dtype=np.uint16), np.array(offsets, dtype=np.uint16)
+        return np.array(flat_vals, dtype=np.int32), np.array(offsets, dtype=np.int32)
     # --------------------------------
 
     _logger.info(f"Saving DataFrame with {df.shape[0]} rows and {df.shape[1]} columns to {pth}")
@@ -209,57 +209,57 @@ def load_df(path: str) -> pd.DataFrame:
     if not path.endswith(".zip"):
         path += ".zip"
     _logger.info(f"Loading DataFrame from {path}")
-    store = zarr.storage.ZipStore(path, mode="r")
-    root = zarr.open_group(store, mode="r")
+    with zarr.storage.ZipStore(path, mode="r") as store:
+        root = zarr.open_group(store, mode="r")
 
-    def decode_strings(b: np.ndarray) -> np.ndarray:
-        """
-        Execute `decode strings`.
+        def decode_strings(b: np.ndarray) -> np.ndarray:
+            """
+            Execute `decode strings`.
 
-        Args:
-            b: Input value for `b`.
-        """
-        return np.char.decode(b, encoding="ascii")
+            Args:
+                b: Input value for `b`.
+            """
+            return np.char.decode(b, encoding="ascii")
 
-    full_acc = decode_strings(root["accessions"][:])
-    df = pd.DataFrame({"Entry": full_acc})
+        full_acc = decode_strings(root["accessions"][:])
+        df = pd.DataFrame({"Entry": full_acc})
 
-    for col_name in root.group_keys():
-        _logger.debug(f"Loading {col_name} data")
-        grp = root[col_name]
-        is_empty = grp.attrs.get("is_empty")
+        for col_name in root.group_keys():
+            _logger.debug(f"Loading {col_name} data")
+            grp = root[col_name]
+            is_empty = grp.attrs.get("is_empty")
 
-        if is_empty:
-            df[col_name] = np.nan
-            continue
+            if is_empty:
+                df[col_name] = np.nan
+                continue
 
-        col_acc = decode_strings(grp["accessions"][:])
+            col_acc = decode_strings(grp["accessions"][:])
 
-        if {"flat_vals", "offsets"} <= set(grp.array_keys()):
-            flat = grp["flat_vals"][:].astype(int)
-            offs = grp["offsets"][:].astype(int)
-            values = [
-                tuple(flat[offs[i]:offs[i + 1]])
-                for i in range(len(col_acc))
-            ]
+            if {"flat_vals", "offsets"} <= set(grp.array_keys()):
+                flat = grp["flat_vals"][:].astype(int)
+                offs = grp["offsets"][:].astype(int)
+                values = [
+                    tuple(flat[offs[i]:offs[i + 1]])
+                    for i in range(len(col_acc))
+                ]
 
-        elif "data" in grp.array_keys():
-            data   = grp["data"][:].astype(np.float32)
-            values = [row for row in data]
+            elif "data" in grp.array_keys():
+                data   = grp["data"][:].astype(np.float32)
+                values = [row for row in data]
 
-        else:
-            raise ValueError(
-                f"Unknown layout in column '{col_name}': {grp.array_keys()}"
-            )
+            else:
+                raise ValueError(
+                    f"Unknown layout in column '{col_name}': {grp.array_keys()}"
+                )
 
-        mapping = dict(zip(col_acc, values))
-        df[col_name] = df["Entry"].map(mapping)
+            mapping = dict(zip(col_acc, values))
+            df[col_name] = df["Entry"].map(mapping)
 
-    df.attrs.update(dict(root.attrs))
-    df.sort_index(axis=1, inplace=True)
-    _logger.info(f"Loaded DataFrame with {df.shape[0]} rows and {df.shape[1]} columns from {path}")
+        df.attrs.update(dict(root.attrs))
+        df.sort_index(axis=1, inplace=True)
+        _logger.info(f"Loaded DataFrame with {df.shape[0]} rows and {df.shape[1]} columns from {path}")
 
-    return df
+        return df
 
 def empty_tuples_to_NaNs(df: pd.DataFrame, inplace=False) -> pd.DataFrame:
     """

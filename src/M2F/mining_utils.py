@@ -47,6 +47,8 @@ def extract_accessions_from_humann(
 
     _logger.info(f"Extracting UniRef90 and UniClust90 id(s) from {os.path.basename(file_path)}")
     for id_ in df["READS_UNMAPPED"]:
+        if not isinstance(id_, str):
+            continue
         uniref_match = _UNIREF90_RE.search(id_)
 
         if uniref_match:
@@ -104,6 +106,7 @@ def fetch_uniprotkb_fields(
     dfs: list[pd.DataFrame] = []
     total_ids       = len(uniref_ids)
     total_requests  = ceil(total_ids / request_size)
+    request_id      = 0
 
     # ---------Batched-data-retrieval---------
     requested_fields = ",".join(fields)

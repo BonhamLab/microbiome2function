@@ -2604,7 +2604,12 @@ class ProteinDataset(Dataset):
 
 
 __all__ = [
-
+    "DatasetInput",
+    "build_topology_from_DatasetInput",
+    "build_features_from_DatasetInput",
+    "ProteinGraphInMemoryDataset",
+    "ProteinGraphOnDiskDataset",
+    "ProteinDataset",
 ]
 
 
