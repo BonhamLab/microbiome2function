@@ -1,4 +1,5 @@
 ![LOGO](https://raw.githubusercontent.com/Yehor-Mishchyriak/microbiome2function/main/assets/M2F_banner.png)
+[![Test](https://github.com/Yehor-Mishchyriak/microbiome2function/actions/workflows/test.yml/badge.svg)](https://github.com/Yehor-Mishchyriak/microbiome2function/actions/workflows/test.yml)
 
 # microbiome2function (M2F)
 
