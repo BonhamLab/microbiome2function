@@ -39,7 +39,7 @@ from .feature_engineering_utils import (
 
 # models
 from .ffnn import FFNN
-from .gnn import GraphConv, GraphConvNodeClassifier
+from .gnn import GraphConv, GraphConvNodeClassifier, GATNodeClassifier
 
 # metrics
 from .testing_utils import accuracy, recall, precision, f1
@@ -90,6 +90,7 @@ __all__ = [
     "FFNN",
     "GraphConv",
     "GraphConvNodeClassifier",
+    "GATNodeClassifier",
     # metrics
     "accuracy",
     "recall",
