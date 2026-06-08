@@ -87,7 +87,7 @@ Current exported API (`M2F.__all__`) includes:
 - Cleaning: `clean_col`, `clean_cols`.
 - Embedding / Encoding: `AAChainEmbedder`, `FreeTXTEmbedder`, `MultiHotEncoder`, `GOEncoder`, `ECEncoder`, `encode_multihot`, `get_GODag`.
 - Feature engineering / persistence: `embed_ft_domains`, `embed_AAsequences`, `embed_freetxt_cols`, `encode_go`, `encode_ec`, `empty_tuples_to_NaNs`, `save_df`, `load_df`.
-- Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`.
+- Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`, `GATNodeClassifier`.
 - Metrics: `accuracy`, `recall`, `precision`, `f1`.
 - Dataset interfaces: `DatasetInput`, `build_topology_from_DatasetInput`, `build_features_from_DatasetInput`, `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`, `ProteinDataset`.
 - Utility namespace: `util`.
@@ -500,7 +500,48 @@ Implementation details worth knowing:
 - During neighbor sampling, only seed nodes are supervised in each batch (`batch_size` mask logic).
 - `fit(...)` returns `best_val_loss`, `best_model_path`, and epoch-wise `history`.
 
-## 8.2 FFNN: `FFNN`
+## 8.2 GNN Attention: `GATNodeClassifier`
+
+`GATNodeClassifier` is the attention-based graph model. It uses the same `ProteinGraphInMemoryDataset` / `ProteinGraphOnDiskDataset` loaders as `GraphConvNodeClassifier`.
+
+```python
+import torch
+from M2F import GATNodeClassifier
+
+model = GATNodeClassifier(
+    in_dim=128,
+    edge_dim=4,
+    msg_dim=64,  # retained for constructor compatibility
+    state_dim=64,
+    out_dim=1,
+    heads=4,
+    attention_dropout_p=0.1,
+    dropout_p=0.3,
+)
+
+model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
+history = model.fit(
+    train=train_loader,
+    val=val_loader,
+    epochs=50,
+    early_stopping=True,
+    tolerance=5,
+    report_performance_every_kth_epoch=1,
+    save_model_to="runs/checkpoints_gat",
+)
+
+metrics = model.test(test_loader, threshold=0.5)
+print(history["best_val_loss"], metrics)
+```
+
+Implementation details worth knowing:
+- Internally uses PyTorch Geometric `GATConv`.
+- `state_dim` must be divisible by `heads` because head outputs are concatenated.
+- Edge attributes are used when `edge_dim > 0`; empty edge-attribute tensors are ignored when `edge_dim=0`.
+- Training, evaluation, masking, loss, and returned history match `GraphConvNodeClassifier`.
+
+## 8.3 FFNN: `FFNN`
 
 ```python
 import torch
@@ -527,7 +568,7 @@ Implementation details:
 - Loss: `BCEWithLogitsLoss`.
 - `forward(...)` returns logits during training, sigmoid probabilities during eval.
 
-## 8.3 Metrics Utilities
+## 8.4 Metrics Utilities
 
 Available helpers (`M2F.testing_utils`):
 - `accuracy(logits, y_true, mask, threshold=0.5)`
@@ -598,6 +639,7 @@ from M2F import (
     DatasetInput,
     ProteinGraphOnDiskDataset,
     GraphConvNodeClassifier,
+    GATNodeClassifier,
 )
 
 configure_logging("logs", file_level=logging.DEBUG, console_level=logging.INFO)
@@ -636,6 +678,17 @@ model = GraphConvNodeClassifier(
     state_dim=128,
     out_dim=y_dim,
 )
+
+# Drop-in attention variant for the same dataset and loaders:
+# model = GATNodeClassifier(
+#     in_dim=x_dim,
+#     edge_dim=edge_dim,
+#     msg_dim=128,
+#     state_dim=128,
+#     out_dim=y_dim,
+#     heads=4,
+#     attention_dropout_p=0.1,
+# )
 
 history = model.fit(
     train=train_loader,
@@ -686,7 +739,7 @@ python -m pip install dist/microbiome2function-0.1.0-py3-none-any.whl
 - `M2F.embedding_utils`: ESM and OpenAI embedding + GO/EC/multihot encoders.
 - `M2F.feature_engineering_utils`: high-level embedding wrappers + zarr zip persistence.
 - `M2F.pyg_data_interfaces`: graph and FFNN dataset interfaces + standalone builders.
-- `M2F.gnn`: graph convolution model and training/eval loops.
+- `M2F.gnn`: graph convolution, graph attention, and training/eval loops.
 - `M2F.ffnn`: feed-forward model and training/eval loops.
 - `M2F.testing_utils`: metric helpers.
 - `M2F.util`: utility helpers and zarr feature-store backend.

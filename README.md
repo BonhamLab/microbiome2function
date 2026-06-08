@@ -49,7 +49,7 @@ Current top-level exports include:
 - Cleaning: `clean_col`, `clean_cols`
 - Embedding/encoding: `AAChainEmbedder`, `FreeTXTEmbedder`, `MultiHotEncoder`, `GOEncoder`, `ECEncoder`, `encode_multihot`, `get_GODag`
 - Feature engineering/persistence: `embed_ft_domains`, `embed_AAsequences`, `embed_freetxt_cols`, `encode_go`, `encode_ec`, `empty_tuples_to_NaNs`, `save_df`, `load_df`
-- Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`
+- Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`, `GATNodeClassifier`
 - Metrics: `accuracy`, `recall`, `precision`, `f1`
 - Dataset interfaces: `DatasetInput`, `build_topology_from_DatasetInput`, `build_features_from_DatasetInput`, `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`, `ProteinDataset`
 - Utility namespace: `util`
@@ -138,7 +138,7 @@ For graph mode, edge chunk files must exist and match the expected naming patter
 ```python
 from pathlib import Path
 import torch
-from M2F import ProteinGraphOnDiskDataset, GraphConvNodeClassifier
+from M2F import ProteinGraphOnDiskDataset, GraphConvNodeClassifier, GATNodeClassifier
 
 ds = ProteinGraphOnDiskDataset(
     root=Path("runs/graph_ondisk"),
@@ -159,6 +159,17 @@ model = GraphConvNodeClassifier(
     state_dim=128,
     out_dim=int(ds.meta["y_dim"]),
 )
+
+# Drop-in attention variant for the same graph/loaders:
+# model = GATNodeClassifier(
+#     in_dim=int(ds.meta["x_dim"]),
+#     edge_dim=int(ds.meta["edge_attr_dim"]),
+#     msg_dim=128,  # kept for constructor compatibility
+#     state_dim=128,
+#     out_dim=int(ds.meta["y_dim"]),
+#     heads=4,
+#     attention_dropout_p=0.1,
+# )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
@@ -221,6 +232,7 @@ dset.close()
 - Topology for on-disk graph datasets is built after feature processing so filtered-node reindexing is stable.
 - Feature shards with duplicate `Entry` rows are rejected.
 - Inconsistent per-row feature dimensions are rejected.
+- `GATNodeClassifier` uses the same graph datasets/loaders as `GraphConvNodeClassifier`; `state_dim` must be divisible by `heads`.
 - `force_reload=True` rebuilds raw/processed artifacts from scratch.
 
 ## Logging
