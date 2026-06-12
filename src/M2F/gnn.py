@@ -223,6 +223,8 @@ class GraphConvNodeClassifier(Module):
         if tolerance < 0:
             raise ValueError("`tolerance` must be >= 0")
 
+        from . import wb
+
         k = report_performance_every_kth_epoch
         save_model_to = Path(save_model_to if save_model_to is not None else os.getcwd())
         save_model_to.mkdir(parents=True, exist_ok=True)
@@ -359,7 +361,7 @@ class GraphConvNodeClassifier(Module):
                 best_val_loss = current_val_loss
                 no_generalization_after = 0
                 best_model_path = save_model_to / f"m2f_gnn_{current_time()}.pt"
-                torch.save(self.state_dict(), best_model_path)
+                wb.save_best_model(self, "m2f-graphconv-best", best_model_path)
                 _logger.debug(
                     "New best validation loss %.6f at epoch %d; saved checkpoint to %s",
                     best_val_loss,
@@ -384,6 +386,20 @@ class GraphConvNodeClassifier(Module):
                 "val_recall": val_recall,
                 "val_f1": val_f1,
             })
+            wb.log_epoch(
+                epoch,
+                train_loss,
+                train_accuracy,
+                train_precision,
+                train_recall,
+                train_f1,
+                current_val_loss,
+                val_accuracy,
+                val_precision,
+                val_recall,
+                val_f1,
+                optimizer,
+            )
 
             if epoch == 1 or epoch % k == 0:
                 _logger.info(
@@ -602,6 +618,8 @@ class GATNodeClassifier(Module):
         if tolerance < 0:
             raise ValueError("`tolerance` must be >= 0")
 
+        from . import wb
+
         k = report_performance_every_kth_epoch
         save_model_to = Path(save_model_to if save_model_to is not None else os.getcwd())
         save_model_to.mkdir(parents=True, exist_ok=True)
@@ -735,7 +753,7 @@ class GATNodeClassifier(Module):
                 best_val_loss = current_val_loss
                 no_generalization_after = 0
                 best_model_path = save_model_to / f"m2f_gat_{current_time()}.pt"
-                torch.save(self.state_dict(), best_model_path)
+                wb.save_best_model(self, "m2f-gat-best", best_model_path)
                 _logger.debug(
                     "New best validation loss %.6f at epoch %d; saved checkpoint to %s",
                     best_val_loss,
@@ -760,6 +778,20 @@ class GATNodeClassifier(Module):
                 "val_recall": val_recall,
                 "val_f1": val_f1,
             })
+            wb.log_epoch(
+                epoch,
+                train_loss,
+                train_accuracy,
+                train_precision,
+                train_recall,
+                train_f1,
+                current_val_loss,
+                val_accuracy,
+                val_precision,
+                val_recall,
+                val_f1,
+                optimizer,
+            )
 
             if epoch == 1 or epoch % k == 0:
                 _logger.info(
