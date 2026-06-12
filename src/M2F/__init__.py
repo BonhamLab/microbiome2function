@@ -104,5 +104,5 @@ __all__ = [
     "ProteinGraphOnDiskDataset",
     "ProteinDataset",
     # utility module namespace
-    "util",
+    "util"
 ]

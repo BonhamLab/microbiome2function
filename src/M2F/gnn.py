@@ -279,6 +279,9 @@ class GraphConvNodeClassifier(Module):
 
                 mask = torch.zeros(batch.y.size(0), dtype=torch.bool, device=device)
                 mask[:batch_size] = True
+                # ^ ^ ^
+                # With NeighborLoader, each returned batch is a sampled subgraph. PyG puts the seed/input nodes first in the batch, then appends sampled neighbor nodes after them.
+                # So, it means: compute loss only on the seed nodes for this NeighborLoader batch
 
                 optimizer.zero_grad()
                 logits = self._forward_logits(batch.x, batch.edge_index, batch.edge_attr)

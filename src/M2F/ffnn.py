@@ -164,7 +164,7 @@ class FFNN(Module):
                 loss.backward()
                 optimizer.step()
 
-                with torch.no_grad():
+                with torch.no_grad(): # each step's loss is weighted by num_examples_in_step / total_num_examples
                     train_loss_sum += float(loss.item()) * batch_size
                     train_acc_sum += accuracy(logits, y, mask) * batch_size
                     train_recall_sum += recall(logits, y, mask) * batch_size
