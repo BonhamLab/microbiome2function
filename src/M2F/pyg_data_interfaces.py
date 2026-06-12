@@ -1870,6 +1870,23 @@ class ProteinGraphOnDiskDataset:
             self.feature_store.close()
             self.feature_store = None
 
+    def __enter__(self):
+        """
+        Enter the context manager.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        """
+        Exit the context manager.
+
+        Args:
+            exc_type: Input value for `exc_type`.
+            exc: Input value for `exc`.
+            tb: Input value for `tb`.
+        """
+        self.close()
+
 
 class _ProteinDatasetView(Dataset):
     """
@@ -2601,6 +2618,23 @@ class ProteinDataset(Dataset):
             _logger.debug("Closing ProteinDataset feature store")
             self.feature_store.close()
             self.feature_store = None
+
+    def __enter__(self):
+        """
+        Enter the context manager.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        """
+        Exit the context manager.
+
+        Args:
+            exc_type: Input value for `exc_type`.
+            exc: Input value for `exc`.
+            tb: Input value for `tb`.
+        """
+        self.close()
 
 
 __all__ = [
