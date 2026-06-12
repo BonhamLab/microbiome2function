@@ -11,7 +11,7 @@ import logging
 import os
 
 # local
-from .testing_utils import accuracy, recall
+from .testing_utils import accuracy, precision, recall, f1
 from .util import current_time
 
 _logger = logging.getLogger(__name__)
@@ -146,8 +146,10 @@ class FFNN(Module):
             # ------------------------------- train -------------------------------
             self.train()
             train_loss_sum = 0.0
-            train_acc_sum = 0.0
+            train_accuracy_sum = 0.0
+            train_precision_sum = 0.0
             train_recall_sum = 0.0
+            train_f1_sum = 0.0
             train_examples = 0
 
             for X, y in train:
@@ -166,23 +168,29 @@ class FFNN(Module):
 
                 with torch.no_grad(): # each step's loss is weighted by num_examples_in_step / total_num_examples
                     train_loss_sum += float(loss.item()) * batch_size
-                    train_acc_sum += accuracy(logits, y, mask) * batch_size
+                    train_accuracy_sum += accuracy(logits, y, mask) * batch_size
+                    train_precision_sum += precision(logits, y, mask) * batch_size
                     train_recall_sum += recall(logits, y, mask) * batch_size
+                    train_f1_sum += f1(logits, y, mask) * batch_size
                     train_examples += batch_size
 
             if train_examples == 0:
                 raise RuntimeError("Train loader produced no non-empty batches.")
 
             train_loss = train_loss_sum / train_examples
-            train_acc = train_acc_sum / train_examples
+            train_accuracy = train_accuracy_sum / train_examples
+            train_precision = train_precision_sum / train_examples
             train_recall = train_recall_sum / train_examples
+            train_f1 = train_f1_sum / train_examples
             # -------------------------------------------------------------------
 
             # -------------------------------- val ------------------------------
             self.eval()
             val_loss_sum = 0.0
-            val_acc_sum = 0.0
+            val_accuracy_sum = 0.0
+            val_precision_sum = 0.0
             val_recall_sum = 0.0
+            val_f1_sum = 0.0
             val_examples = 0
             with torch.no_grad():
                 for X, y in val:
@@ -197,16 +205,20 @@ class FFNN(Module):
                     loss = criterion(logits, y)
 
                     val_loss_sum += float(loss.item()) * batch_size
-                    val_acc_sum += accuracy(logits, y, mask) * batch_size
+                    val_accuracy_sum += accuracy(logits, y, mask) * batch_size
+                    val_precision_sum += precision(logits, y, mask) * batch_size
                     val_recall_sum += recall(logits, y, mask) * batch_size
+                    val_f1_sum += f1(logits, y, mask) * batch_size
                     val_examples += batch_size
 
             if val_examples == 0:
                 raise RuntimeError("Validation loader produced no non-empty batches.")
 
             current_val_loss = val_loss_sum / val_examples
-            val_acc = val_acc_sum / val_examples
+            val_accuracy = val_accuracy_sum / val_examples
+            val_precision = val_precision_sum / val_examples
             val_recall = val_recall_sum / val_examples
+            val_f1 = val_f1_sum / val_examples
             # -------------------------------------------------------------------
 
             # -------------------------- scheduler + early stop ------------------
@@ -233,18 +245,35 @@ class FFNN(Module):
             history.append({
                 "epoch": epoch,
                 "train_loss": train_loss,
-                "train_acc": train_acc,
+                "train_acc": train_accuracy,
+                "train_accuracy": train_accuracy,
+                "train_precision": train_precision,
                 "train_recall": train_recall,
+                "train_f1": train_f1,
                 "val_loss": current_val_loss,
-                "val_acc": val_acc,
+                "val_acc": val_accuracy,
+                "val_accuracy": val_accuracy,
+                "val_precision": val_precision,
                 "val_recall": val_recall,
+                "val_f1": val_f1,
             })
 
             if epoch == 1 or epoch % k == 0:
                 _logger.info(
-                    "Epoch %d | train_loss=%.6f train_acc=%.4f train_recall=%.4f | "
-                    "val_loss=%.6f val_acc=%.4f val_recall=%.4f",
-                    epoch, train_loss, train_acc, train_recall, current_val_loss, val_acc, val_recall
+                    "Epoch %d | train_loss=%.6f train_accuracy=%.4f train_precision=%.4f "
+                    "train_recall=%.4f train_f1=%.4f | val_loss=%.6f val_accuracy=%.4f "
+                    "val_precision=%.4f val_recall=%.4f val_f1=%.4f",
+                    epoch,
+                    train_loss,
+                    train_accuracy,
+                    train_precision,
+                    train_recall,
+                    train_f1,
+                    current_val_loss,
+                    val_accuracy,
+                    val_precision,
+                    val_recall,
+                    val_f1,
                 )
 
             if early_stopping and no_generalization_after > tolerance:
