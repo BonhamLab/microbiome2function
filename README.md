@@ -55,6 +55,7 @@ Current top-level exports include:
 - Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`, `GATNodeClassifier`
 - Metrics: `accuracy`, `recall`, `precision`, `f1`
 - Dataset interfaces: `DatasetInput`, `build_topology_from_DatasetInput`, `build_features_from_DatasetInput`, `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`, `ProteinDataset`
+- W&B helpers: `M2F.wb` for lightweight metric logging and best-model artifacts during `.fit(...)`
 - Utility namespace: `util`
 
 ## Typical Workflow
@@ -251,6 +252,20 @@ configure_logging(
     console_level=logging.INFO,
 )
 ```
+
+### Weights & Biases
+
+`FFNN.fit(...)`, `GraphConvNodeClassifier.fit(...)`, and `GATNodeClassifier.fit(...)` log epoch metrics and best-model artifacts through `M2F.wb` when a W&B run is active:
+
+```python
+import wandb
+
+wandb.init(project="m2f", name="example-run", config={"model": "gat"})
+history = model.fit(train_loader, val_loader, epochs=30, save_model_to="runs/checkpoints")
+wandb.finish()
+```
+
+For training scripts, pass `--wandb-project`, `--wandb-name`, and optionally `--wandb-mode online`.
 
 ## CI Workflows
 

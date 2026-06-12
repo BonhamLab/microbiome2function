@@ -72,6 +72,11 @@ Why:
 - M2F emits useful progress and validation messages during mining, processing, and training.
 - Debug logs are especially useful for long batched dataset builds.
 
+W&B:
+- Training loops in `FFNN`, `GraphConvNodeClassifier`, and `GATNodeClassifier` use `M2F.wb` opportunistically.
+- If `wandb.init(...)` has been called, `.fit(...)` logs train/validation loss, accuracy, precision, recall, F1, learning rate, and best-model artifacts.
+- If no W&B run is active, training still works normally and only local checkpoints are saved.
+
 ## 3. Public API Overview
 
 Top-level import path:
@@ -89,6 +94,7 @@ Current exported API (`M2F.__all__`) includes:
 - Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`, `GATNodeClassifier`.
 - Metrics: `accuracy`, `recall`, `precision`, `f1`.
 - Dataset interfaces: `DatasetInput`, `build_topology_from_DatasetInput`, `build_features_from_DatasetInput`, `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`, `ProteinDataset`.
+- W&B helpers: `M2F.wb` for lightweight metric logging and best-model artifacts when a W&B run is active.
 - Utility namespace: `util`.
 
 ## 4. Data Contracts You Must Respect
@@ -491,6 +497,7 @@ Implementation details worth knowing:
 - Loss: `BCEWithLogitsLoss`.
 - During neighbor sampling, only seed nodes are supervised in each batch (`batch_size` mask logic).
 - `fit(...)` returns `best_val_loss`, `best_model_path`, and epoch-wise `history`.
+- When W&B is active, `fit(...)` logs epoch metrics and the best checkpoint through `M2F.wb`.
 
 ## 8.2 GNN Attention: `GATNodeClassifier`
 
@@ -532,6 +539,7 @@ Implementation details worth knowing:
 - `state_dim` must be divisible by `heads` because head outputs are concatenated.
 - Edge attributes are used when `edge_dim > 0`; empty edge-attribute tensors are ignored when `edge_dim=0`.
 - Training, evaluation, masking, loss, and returned history match `GraphConvNodeClassifier`.
+- When W&B is active, `fit(...)` logs epoch metrics and the best checkpoint through `M2F.wb`.
 
 ## 8.3 FFNN: `FFNN`
 
@@ -559,8 +567,39 @@ print(history["best_val_loss"], metrics)
 Implementation details:
 - Loss: `BCEWithLogitsLoss`.
 - `forward(...)` returns logits during training, sigmoid probabilities during eval.
+- When W&B is active, `fit(...)` logs epoch metrics and the best checkpoint through `M2F.wb`.
 
-## 8.4 Metrics Utilities
+## 8.4 Weights & Biases Integration
+
+M2F keeps W&B optional. The model loops do not start runs themselves; they only log if a run is already active.
+
+```python
+import wandb
+
+wandb.init(project="m2f", name="gcnn-example", config={"model": "gcnn"})
+history = model.fit(
+    train=train_loader,
+    val=val_loader,
+    epochs=50,
+    save_model_to="runs/checkpoints",
+)
+metrics = model.test(test_loader)
+wandb.log({key.replace("_", "/"): value for key, value in metrics.items()})
+wandb.finish()
+```
+
+The training scripts expose the same behavior with CLI flags:
+
+```bash
+python training_scripts/gat_training.py \
+  --data-dir untracked/prev_30-0.005 \
+  --run-dir untracked/runs/gat_prev_30_0005 \
+  --wandb-project m2f \
+  --wandb-name gat-prev-30-0005 \
+  --wandb-mode online
+```
+
+## 8.5 Metrics Utilities
 
 Available helpers (`M2F.testing_utils`):
 - `accuracy(logits, y_true, mask, threshold=0.5)`
@@ -720,6 +759,7 @@ python -m pip install dist/microbiome2function-0.1.0-py3-none-any.whl
 - Start small: validate your `DatasetInput` and preprocessing on a tiny accession subset first.
 - Keep transform contracts strict: `pre_transform` must return DataFrame; `pre_filter` must return boolean mask with matching length.
 - Use explicit checkpoints: preserve `meta.pt`, vocab maps, and model checkpoints per experiment.
+- Use W&B for experiment comparison when running multiple FFNN/GCNN/GAT jobs; keep local `results.json` and checkpoint folders as the source of record.
 - Close on-disk datasets: prefer context-manager usage (`with ... as ...:`), or call `close()` to release zarr handles after training/inference.
 - Avoid silent schema drift: pin requested UniProt fields and return names in code, not notebooks-only state.
 
@@ -733,5 +773,6 @@ python -m pip install dist/microbiome2function-0.1.0-py3-none-any.whl
 - `M2F.pyg_data_interfaces`: graph and FFNN dataset interfaces + standalone builders.
 - `M2F.gnn`: graph convolution, graph attention, and training/eval loops.
 - `M2F.ffnn`: feed-forward model and training/eval loops.
+- `M2F.wb`: optional W&B metric logging and best-model artifact helpers.
 - `M2F.testing_utils`: metric helpers.
 - `M2F.util`: utility helpers and zarr feature-store backend.
