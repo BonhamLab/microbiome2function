@@ -3,7 +3,7 @@
 
 # microbiome2function (M2F)
 
-A toolkit for turning UniProt-linked protein annotations into machine-learning datasets.
+A toolkit for mining UniProt-linked protein annotations, engineering protein features, building graph/non-graph datasets, and training neural models for function prediction.
 
 M2F supports:
 - UniProt mining from UniRef accessions
@@ -12,6 +12,9 @@ M2F supports:
 - Dataset interfaces for:
   - PyTorch Geometric GNN training (`ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`)
   - Plain PyTorch FFNN training (`ProteinDataset`)
+- Model implementations for:
+  - Graph convolution and graph attention node classifiers (`GraphConvNodeClassifier`, `GATNodeClassifier`)
+  - Feed-forward neural networks (`FFNN`)
 
 ## Package Status
 
@@ -229,6 +232,7 @@ dset.close()
 ## Important Operational Notes
 
 - `ProteinGraphOnDiskDataset` and `ProteinDataset` process features in batches and build a global node reindex map.
+- `ProteinGraphOnDiskDataset` and `ProteinDataset` support `with ... as ...:` context-manager usage to release zarr handles automatically.
 - Topology for on-disk graph datasets is built after feature processing so filtered-node reindexing is stable.
 - Feature shards with duplicate `Entry` rows are rejected.
 - Inconsistent per-row feature dimensions are rejected.
@@ -252,14 +256,6 @@ configure_logging(
 
 - `/.github/workflows/test.yml`: multi-version test matrix (3.11, 3.12)
 - `/.github/workflows/build.yml`: test + build distribution artifacts (`sdist`, wheel)
-
-## Repository Layout
-
-- `src/M2F`: package code
-- `tests`: unit tests
-- `model_notebooks`: active notebooks
-- `legacy_code_examples`: old examples
-- `docs.md`: detailed technical guide
 
 ## Detailed Documentation
 

@@ -1,19 +1,19 @@
 # M2F Documentation
 
-This document is the implementation-accurate user guide for `microbiome2function` (M2F).
-It is written against the current code under `src/M2F`.
-
 ## 1. What M2F Is For
 
-M2F is a practical toolkit for turning protein identifiers and UniProt annotations into ML-ready inputs.
+M2F is a practical toolkit for mining protein annotations, engineering protein features, building graph/non-graph datasets, and training neural models for function prediction.
 
 Primary use-cases:
 - Mine UniProt features from UniRef IDs.
 - Clean and normalize noisy annotation text.
 - Convert biology fields into numeric tensors (embeddings + encodings).
 - Build datasets for graph and non-graph modeling:
-- Graph neural networks (PyTorch Geometric): `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`.
-- Feed-forward neural networks (plain PyTorch): `ProteinDataset` (features + labels, no edges).
+  - Graph neural networks (PyTorch Geometric): `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`.
+  - Feed-forward neural networks (plain PyTorch): `ProteinDataset` (features + labels, no edges).
+- Train neural models:
+  - Graph convolution / graph attention node classifiers: `GraphConvNodeClassifier`, `GATNodeClassifier`.
+  - Feed-forward neural networks: `FFNN`.
 
 Design goals:
 - Scalable processing for large accession sets (batched UniProt mining and batched feature shards).
@@ -37,10 +37,6 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
 ```
-
-Why editable install:
-- Keeps imports stable (`import M2F`) while you iterate code.
-- Ensures tests and notebooks run against your local working tree.
 
 ## 2.2 Heavy Dependencies to Plan For
 
@@ -94,8 +90,6 @@ Current exported API (`M2F.__all__`) includes:
 
 ## 4. Data Contracts You Must Respect
 
-M2F works well only if input schemas are strict. This is intentional.
-
 ## 4.1 Accession Index CSV
 
 Expected columns exactly:
@@ -107,10 +101,6 @@ Constraints enforced by `DatasetInput.validate(...)`:
 - `i` must be 1-based positive IDs.
 - `i` must not contain duplicates.
 - `uniref` values must start with `UniRef90_`.
-
-Why strict index requirements:
-- All reindexing and topology construction depend on deterministic old node IDs (`i - 1`).
-- Relaxed IDs would make edge mapping ambiguous and error-prone.
 
 ## 4.2 Edge CSV Files (Graph Datasets Only)
 
@@ -134,16 +124,13 @@ Why one chunk per source node:
 `DatasetInput` uses:
 - `X: dict[str, str]` mapping UniProt query field -> return column name.
 - `Y: dict[str, str]` singleton mapping UniProt query field -> return column name.
+NOTE: See UniProt for query field and return field names
 
 Important:
 - `Y` must contain exactly one entry.
 - `Y` cannot overlap with `X` keys or values.
 - `Y` key cannot be `accession`.
 - `accession` is always injected into `X` internally as `"Entry"`.
-
-Why mapping instead of plain list:
-- You control the semantic output names used by downstream feature builders.
-- It decouples UniProt field identifiers from model-facing column names.
 
 ## 5. Quick Start: End-to-End Patterns
 
@@ -157,7 +144,7 @@ all_unirefs, all_uniclusts = extract_all_accessions_from_dir("humann_outputs/")
 ```
 
 Notes:
-- UniRef IDs prefixed with `UNK`/`UPI` are excluded before UniProt mining because they are not queryable reliably.
+- UniRef IDs prefixed with `UNK`/`UPI` are excluded before UniProt mining because they are not queryable.
 
 ## 5.2 Fetch UniProt Fields
 
@@ -175,8 +162,8 @@ df = fetch_uniprotkb_fields(
 
 Field-name note:
 - `fields` values must be valid UniProt API field identifiers.
-- Returned DataFrame column names can differ from query names (for example, title-cased labels).
-- Your later mapping/transforms must match the actual returned column names.
+- Returned DataFrame column names will likely differ from query names (that's how UniProt works, sorry).
+- Your later mapping/transforms must match the actual **returned** column names.
 
 Recommended defaults for stability:
 - Start with moderate `request_size` (25-100).
@@ -208,6 +195,8 @@ What you get:
 
 Why tuple outputs:
 - Deterministic multi-label representation that plugs directly into encoders.
+
+Values passed to `col_names` may need you to implement regexes for them.
 
 ## 5.4 Encode and Embed
 
@@ -385,7 +374,7 @@ Under the hood:
 - Edge attributes are attached per mini-batch via batch `e_id` lookup.
 
 Operational note:
-- Call `ondisk.close()` when done to release store handles.
+- Prefer `with ProteinGraphOnDiskDataset(...) as ondisk:` to release store handles automatically; otherwise call `ondisk.close()` when done.
 
 ## 6.4 Feature and Topology Builders as Standalone Functions
 
@@ -458,7 +447,7 @@ Why separate FFNN dataset class:
 - Reuses robust batch-processing, filtering, reindexing, and zarr growth path.
 
 Operational note:
-- Call `dset.close()` when done.
+- Prefer `with ProteinDataset(...) as dset:` to release store handles automatically; otherwise call `dset.close()` when done.
 
 ## 8. Model Training Cookbook
 
@@ -728,7 +717,7 @@ python -m pip install dist/microbiome2function-0.1.0-py3-none-any.whl
 - Start small: validate your `DatasetInput` and preprocessing on a tiny accession subset first.
 - Keep transform contracts strict: `pre_transform` must return DataFrame; `pre_filter` must return boolean mask with matching length.
 - Use explicit checkpoints: preserve `meta.pt`, vocab maps, and model checkpoints per experiment.
-- Close on-disk datasets: call `close()` to release zarr handles after training/inference.
+- Close on-disk datasets: prefer context-manager usage (`with ... as ...:`), or call `close()` to release zarr handles after training/inference.
 - Avoid silent schema drift: pin requested UniProt fields and return names in code, not notebooks-only state.
 
 ## 13. Module Index
