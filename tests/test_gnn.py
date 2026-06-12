@@ -9,7 +9,7 @@ from torch_geometric.data import Data
 
 sys.path.insert(0, os.path.abspath("src"))
 
-from M2F.gnn import GraphConv, GraphConvNodeClassifier
+from M2F.gnn import GATNodeClassifier, GraphConv, GraphConvNodeClassifier
 
 
 class TestGNN(unittest.TestCase):
@@ -60,6 +60,47 @@ class TestGNN(unittest.TestCase):
         self.assertIn("test_loss", metrics)
         self.assertIn("test_acc", metrics)
         self.assertIn("test_recall", metrics)
+
+    def test_gat_classifier_fit_and_test(self):
+        model = GATNodeClassifier(in_dim=2, edge_dim=1, msg_dim=4, state_dim=4, out_dim=1, heads=2, dropout_p=0.0)
+        train = [self._batch()]
+        val = [self._batch()]
+        test = [self._batch()]
+
+        logits = model._forward_logits(self._batch().x, self._batch().edge_index, self._batch().edge_attr)
+        self.assertEqual(logits.shape, (3, 1))
+
+        hist = model.fit(
+            train,
+            val,
+            epochs=2,
+            report_performance_every_kth_epoch=1,
+            save_model_to=self.tmp,
+            early_stopping=False,
+        )
+        self.assertIn("best_val_loss", hist)
+        self.assertEqual(len(hist["history"]), 2)
+
+        metrics = model.test(test)
+        self.assertIn("test_loss", metrics)
+        self.assertIn("test_acc", metrics)
+        self.assertIn("test_recall", metrics)
+
+    def test_gat_classifier_accepts_empty_edge_attrs(self):
+        batch = self._batch()
+        batch.edge_attr = torch.empty((batch.edge_index.size(1), 0), dtype=torch.float32)
+        model = GATNodeClassifier(in_dim=2, edge_dim=0, msg_dim=4, state_dim=4, out_dim=1, dropout_p=0.0)
+
+        logits = model._forward_logits(batch.x, batch.edge_index, batch.edge_attr)
+        self.assertEqual(logits.shape, (3, 1))
+
+    def test_gat_validation(self):
+        with self.assertRaises(ValueError):
+            GATNodeClassifier(in_dim=2, edge_dim=-1, msg_dim=4, state_dim=4, out_dim=1)
+        with self.assertRaises(ValueError):
+            GATNodeClassifier(in_dim=2, edge_dim=1, msg_dim=4, state_dim=4, out_dim=1, heads=0)
+        with self.assertRaises(ValueError):
+            GATNodeClassifier(in_dim=2, edge_dim=1, msg_dim=4, state_dim=5, out_dim=1, heads=2)
 
     def test_fit_validation(self):
         model = GraphConvNodeClassifier(in_dim=2, edge_dim=1, msg_dim=4, state_dim=4, out_dim=1)

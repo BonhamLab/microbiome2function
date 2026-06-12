@@ -177,42 +177,41 @@ class TestPygDataInterfaces(unittest.TestCase):
     def test_protein_graph_ondisk_dataset(self):
         di = self._dataset_input_graph(num_feature_batches=2)
         with patch("M2F.pyg_data_interfaces.fetch_uniprotkb_fields", side_effect=self._fake_fetch):
-            ds = ProteinGraphOnDiskDataset(
+            with ProteinGraphOnDiskDataset(
                 root=self.root_ondisk,
                 dataset_input=di,
                 force_reload=True,
                 val_set_size=0.2,
                 test_set_size=0.2,
-            )
-        self.assertTrue(os.path.exists(ds.edge_index_path))
-        self.assertTrue(os.path.exists(ds.id_map_path))
-        self.assertTrue(os.path.exists(ds.meta_path))
-        self.assertEqual(ds.meta["num_nodes"], 3)
-        ds.close()
+            ) as ds:
+                self.assertTrue(os.path.exists(ds.edge_index_path))
+                self.assertTrue(os.path.exists(ds.id_map_path))
+                self.assertTrue(os.path.exists(ds.meta_path))
+                self.assertEqual(ds.meta["num_nodes"], 3)
+        self.assertIsNone(ds.feature_store)
 
     def test_protein_dataset_ffnn_interface(self):
         di = self._dataset_input_ffnn(num_feature_batches=2)
         with patch("M2F.pyg_data_interfaces.fetch_uniprotkb_fields", side_effect=self._fake_fetch):
-            ds = ProteinDataset(
+            with ProteinDataset(
                 root=self.root_ffnn,
                 dataset_input=di,
                 force_reload=True,
                 split="train",
                 val_set_size=0.2,
                 test_set_size=0.2,
-            )
+            ) as ds:
+                self.assertGreaterEqual(len(ds), 1)
+                item = ds[0]
+                self.assertEqual(len(item), 2)  # x, y
+                x, y = item
+                self.assertEqual(tuple(x.shape), (1,))
+                self.assertEqual(tuple(y.shape), (1,))
 
-        self.assertGreaterEqual(len(ds), 1)
-        item = ds[0]
-        self.assertEqual(len(item), 2)  # x, y
-        x, y = item
-        self.assertEqual(tuple(x.shape), (1,))
-        self.assertEqual(tuple(y.shape), (1,))
-
-        pred_loader = ds.predict_loader(batch_size=2)
-        first = next(iter(pred_loader))
-        self.assertEqual(first.ndim, 2)
-        ds.close()
+                pred_loader = ds.predict_loader(batch_size=2)
+                first = next(iter(pred_loader))
+                self.assertEqual(first.ndim, 2)
+        self.assertIsNone(ds.feature_store)
 
 
 if __name__ == "__main__":

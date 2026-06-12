@@ -26,6 +26,11 @@
 !model_notebooks/PROT*/*.py
 !model_notebooks/PROT*/*.ipynb
 
+# Training scripts
+!training_scripts/
+!training_scripts/*.py
+!training_scripts/*.sh
+
 # Code examples (if present)
 !code_examples/
 !code_examples/data_mining/

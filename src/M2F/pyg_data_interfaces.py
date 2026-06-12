@@ -1644,56 +1644,58 @@ class ProteinGraphOnDiskDataset:
         required_cols = [self.dataset_input.Y_return_field_name, *self.dataset_input.X_return_field_names]
 
         feature_store: _ProteinFeatureStore | None = None
+        combined_features_path: Path | None = None
         total_rows = 0
         try:
             # ---------------------- pass 1: node features -------------------
-            for i in range(1, self.num_feature_batches + 1):
-                batch_path = self._feature_batch_path(i)
-                x_np, y_np = build_features_from_DatasetInput(
-                    pre_transform=self.pre_transform,
-                    pre_filter=self.pre_filter,
-                    accessions_path=accessions_path,
-                    features_path=batch_path,
-                    required_cols=required_cols,
-                    global_id_map=id_map,
-                    X_return_field_names=self.dataset_input.X_return_field_names,
-                    Y_return_field_name=self.dataset_input.Y_return_field_name,
-                )
-
-                if x_np.shape[0] == 0:
-                    _logger.debug("Feature shard %s produced 0 kept rows; skipping", batch_path)
-                    continue
-
-                if feature_store is None:
-                    feature_store = _ProteinFeatureStore(
-                        store_on_disk_location=self.feature_store_dir,
-                        node_feature_dim=(x_np.shape[1],),
-                        edge_feature_dim=(0,),  # rewritten after topology construction
-                        target_feature_dim=(y_np.shape[1],),
-                        read_only=False,
-                    )
-                else:
-                    if x_np.shape[1] != int(feature_store.store.which_tensors["x"][0][1]):
-                        raise ValueError("Inconsistent X feature dimensionality across feature batches")
-                    if y_np.shape[1] != int(feature_store.store.which_tensors["y"][0][1]):
-                        raise ValueError("Inconsistent Y dimensionality across feature batches")
-
-                feature_store.append_tensor(x_np, group_name=None, attr_name="x", index=None)
-                feature_store.append_tensor(y_np, group_name=None, attr_name="y", index=None)
-                total_rows += int(x_np.shape[0])
+            batch_paths = [self._feature_batch_path(i) for i in range(1, self.num_feature_batches + 1)]
+            if len(batch_paths) == 1:
+                features_path = batch_paths[0]
+            else:
+                combined_features_path = self.processed_dir / "_combined_features.csv"
                 _logger.info(
-                    "Processed feature shard %d/%d -> rows=%d x_dim=%d y_dim=%d (total_rows=%d)",
-                    i,
-                    self.num_feature_batches,
-                    int(x_np.shape[0]),
-                    int(x_np.shape[1]),
-                    int(y_np.shape[1]) if y_np.ndim > 1 else 1,
-                    total_rows,
+                    "Combining %d feature shard(s) before pre_transform so target encodings are fitted globally",
+                    len(batch_paths),
                 )
+                pd.concat(
+                    (pd.read_csv(batch_path) for batch_path in batch_paths),
+                    ignore_index=True,
+                ).to_csv(combined_features_path, index=False)
+                features_path = combined_features_path
+
+            x_np, y_np = build_features_from_DatasetInput(
+                pre_transform=self.pre_transform,
+                pre_filter=self.pre_filter,
+                accessions_path=accessions_path,
+                features_path=features_path,
+                required_cols=required_cols,
+                global_id_map=id_map,
+                X_return_field_names=self.dataset_input.X_return_field_names,
+                Y_return_field_name=self.dataset_input.Y_return_field_name,
+            )
+
+            if x_np.shape[0] == 0:
+                raise ValueError("All nodes were filtered out; cannot build on-disk dataset")
+
+            feature_store = _ProteinFeatureStore(
+                store_on_disk_location=self.feature_store_dir,
+                node_feature_dim=(x_np.shape[1],),
+                edge_feature_dim=(0,),  # rewritten after topology construction
+                target_feature_dim=(y_np.shape[1],),
+                read_only=False,
+            )
+
+            feature_store.append_tensor(x_np, group_name=None, attr_name="x", index=None)
+            feature_store.append_tensor(y_np, group_name=None, attr_name="y", index=None)
+            total_rows = int(x_np.shape[0])
+            _logger.info(
+                "Processed feature table -> rows=%d x_dim=%d y_dim=%d",
+                total_rows,
+                int(x_np.shape[1]),
+                int(y_np.shape[1]) if y_np.ndim > 1 else 1,
+            )
             # ----------------------------------------------------------------
 
-            if feature_store is None or total_rows == 0:
-                raise ValueError("All nodes were filtered out; cannot build on-disk dataset")
             _logger.info("Feature pass complete: total_nodes=%d", total_rows)
 
             # ---------------------- pass 2: topology ------------------------
@@ -1786,6 +1788,8 @@ class ProteinGraphOnDiskDataset:
                     meta["edge_attr_dim"],
                 )
         finally:
+            if combined_features_path is not None and combined_features_path.exists():
+                combined_features_path.unlink()
             if feature_store is not None:
                 feature_store.close()
 
@@ -1869,6 +1873,23 @@ class ProteinGraphOnDiskDataset:
             _logger.debug("Closing ProteinGraphOnDiskDataset feature store")
             self.feature_store.close()
             self.feature_store = None
+
+    def __enter__(self):
+        """
+        Enter the context manager.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        """
+        Exit the context manager.
+
+        Args:
+            exc_type: Input value for `exc_type`.
+            exc: Input value for `exc`.
+            tb: Input value for `tb`.
+        """
+        self.close()
 
 
 class _ProteinDatasetView(Dataset):
@@ -2601,6 +2622,23 @@ class ProteinDataset(Dataset):
             _logger.debug("Closing ProteinDataset feature store")
             self.feature_store.close()
             self.feature_store = None
+
+    def __enter__(self):
+        """
+        Enter the context manager.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        """
+        Exit the context manager.
+
+        Args:
+            exc_type: Input value for `exc_type`.
+            exc: Input value for `exc`.
+            tb: Input value for `tb`.
+        """
+        self.close()
 
 
 __all__ = [

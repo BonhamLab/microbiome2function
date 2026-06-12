@@ -1,5 +1,5 @@
 # third party
-from torch_geometric.nn import MessagePassing
+from torch_geometric.nn import GATConv, MessagePassing
 from torch.nn import Dropout, Linear, Module
 from torch.nn.functional import relu, sigmoid
 from torch.optim.lr_scheduler import ExponentialLR
@@ -11,9 +11,8 @@ from pathlib import Path
 import logging
 import os
 
-# local
 from torch_geometric.loader import NeighborLoader
-from .testing_utils import accuracy, recall
+from .testing_utils import accuracy, precision, recall, f1
 from .util import current_time
 
 _logger = logging.getLogger(__name__)
@@ -224,6 +223,8 @@ class GraphConvNodeClassifier(Module):
         if tolerance < 0:
             raise ValueError("`tolerance` must be >= 0")
 
+        from . import wb
+
         k = report_performance_every_kth_epoch
         save_model_to = Path(save_model_to if save_model_to is not None else os.getcwd())
         save_model_to.mkdir(parents=True, exist_ok=True)
@@ -267,8 +268,10 @@ class GraphConvNodeClassifier(Module):
             # ------------------------------- train -------------------------------
             self.train()
             train_loss_sum = 0.0
-            train_acc_sum = 0.0
+            train_accuracy_sum = 0.0
+            train_precision_sum = 0.0
             train_recall_sum = 0.0
+            train_f1_sum = 0.0
             train_examples = 0
 
             for batch in train:
@@ -279,6 +282,9 @@ class GraphConvNodeClassifier(Module):
 
                 mask = torch.zeros(batch.y.size(0), dtype=torch.bool, device=device)
                 mask[:batch_size] = True
+                # ^ ^ ^
+                # With NeighborLoader, each returned batch is a sampled subgraph. PyG puts the seed/input nodes first in the batch, then appends sampled neighbor nodes after them.
+                # So, it means: compute loss only on the seed nodes for this NeighborLoader batch
 
                 optimizer.zero_grad()
                 logits = self._forward_logits(batch.x, batch.edge_index, batch.edge_attr)
@@ -289,23 +295,29 @@ class GraphConvNodeClassifier(Module):
 
                 with torch.no_grad():
                     train_loss_sum += float(loss.item()) * batch_size
-                    train_acc_sum += accuracy(logits, y, mask) * batch_size
+                    train_accuracy_sum += accuracy(logits, y, mask) * batch_size
+                    train_precision_sum += precision(logits, y, mask) * batch_size
                     train_recall_sum += recall(logits, y, mask) * batch_size
+                    train_f1_sum += f1(logits, y, mask) * batch_size
                     train_examples += batch_size
 
             if train_examples == 0:
                 raise RuntimeError("Train loader produced no batches with seed nodes.")
 
             train_loss = train_loss_sum / train_examples
-            train_acc = train_acc_sum / train_examples
+            train_accuracy = train_accuracy_sum / train_examples
+            train_precision = train_precision_sum / train_examples
             train_recall = train_recall_sum / train_examples
+            train_f1 = train_f1_sum / train_examples
             # -------------------------------------------------------------------
 
             # -------------------------------- val ------------------------------
             self.eval()
             val_loss_sum = 0.0
-            val_acc_sum = 0.0
+            val_accuracy_sum = 0.0
+            val_precision_sum = 0.0
             val_recall_sum = 0.0
+            val_f1_sum = 0.0
             val_examples = 0
             with torch.no_grad():
                 for batch in val:
@@ -322,16 +334,20 @@ class GraphConvNodeClassifier(Module):
                     loss = criterion(logits[mask], y[mask])
 
                     val_loss_sum += float(loss.item()) * batch_size
-                    val_acc_sum += accuracy(logits, y, mask) * batch_size
+                    val_accuracy_sum += accuracy(logits, y, mask) * batch_size
+                    val_precision_sum += precision(logits, y, mask) * batch_size
                     val_recall_sum += recall(logits, y, mask) * batch_size
+                    val_f1_sum += f1(logits, y, mask) * batch_size
                     val_examples += batch_size
 
             if val_examples == 0:
                 raise RuntimeError("Validation loader produced no batches with seed nodes.")
 
             current_val_loss = val_loss_sum / val_examples
-            val_acc = val_acc_sum / val_examples
+            val_accuracy = val_accuracy_sum / val_examples
+            val_precision = val_precision_sum / val_examples
             val_recall = val_recall_sum / val_examples
+            val_f1 = val_f1_sum / val_examples
             # -------------------------------------------------------------------
 
             # -------------------------- scheduler + early stop ------------------
@@ -345,7 +361,7 @@ class GraphConvNodeClassifier(Module):
                 best_val_loss = current_val_loss
                 no_generalization_after = 0
                 best_model_path = save_model_to / f"m2f_gnn_{current_time()}.pt"
-                torch.save(self.state_dict(), best_model_path)
+                wb.save_best_model(self, "m2f-graphconv-best", best_model_path)
                 _logger.debug(
                     "New best validation loss %.6f at epoch %d; saved checkpoint to %s",
                     best_val_loss,
@@ -358,18 +374,49 @@ class GraphConvNodeClassifier(Module):
             history.append({
                 "epoch": epoch,
                 "train_loss": train_loss,
-                "train_acc": train_acc,
+                "train_acc": train_accuracy,
+                "train_accuracy": train_accuracy,
+                "train_precision": train_precision,
                 "train_recall": train_recall,
+                "train_f1": train_f1,
                 "val_loss": current_val_loss,
-                "val_acc": val_acc,
+                "val_acc": val_accuracy,
+                "val_accuracy": val_accuracy,
+                "val_precision": val_precision,
                 "val_recall": val_recall,
+                "val_f1": val_f1,
             })
+            wb.log_epoch(
+                epoch,
+                train_loss,
+                train_accuracy,
+                train_precision,
+                train_recall,
+                train_f1,
+                current_val_loss,
+                val_accuracy,
+                val_precision,
+                val_recall,
+                val_f1,
+                optimizer,
+            )
 
             if epoch == 1 or epoch % k == 0:
                 _logger.info(
-                    "Epoch %d | train_loss=%.6f train_acc=%.4f train_recall=%.4f | "
-                    "val_loss=%.6f val_acc=%.4f val_recall=%.4f",
-                    epoch, train_loss, train_acc, train_recall, current_val_loss, val_acc, val_recall
+                    "Epoch %d | train_loss=%.6f train_accuracy=%.4f train_precision=%.4f "
+                    "train_recall=%.4f train_f1=%.4f | val_loss=%.6f val_accuracy=%.4f "
+                    "val_precision=%.4f val_recall=%.4f val_f1=%.4f",
+                    epoch,
+                    train_loss,
+                    train_accuracy,
+                    train_precision,
+                    train_recall,
+                    train_f1,
+                    current_val_loss,
+                    val_accuracy,
+                    val_precision,
+                    val_recall,
+                    val_f1,
                 )
 
             if early_stopping and no_generalization_after > tolerance:
@@ -445,9 +492,402 @@ class GraphConvNodeClassifier(Module):
         return metrics
 
 
+class GATNodeClassifier(Module):
+    """
+    Represent the `GATNodeClassifier` type.
+    """
+    def __init__(self,
+                 in_dim: int,
+                 edge_dim: int,
+                 msg_dim: int,
+                 state_dim: int,
+                 out_dim: int,
+                 *,
+                 heads: int = 1,
+                 attention_dropout_p: float = 0.0,
+                 dropout_p: float = 0.5):
+        """
+        Initialize a `GATNodeClassifier` instance.
+
+        Args:
+            in_dim: Input value for `in_dim`.
+            edge_dim: Input value for `edge_dim`.
+            msg_dim: Input value for `msg_dim`.
+            state_dim: Input value for `state_dim`.
+            out_dim: Input value for `out_dim`.
+            heads: Input value for `heads`.
+            attention_dropout_p: Input value for `attention_dropout_p`.
+            dropout_p: Input value for `dropout_p`.
+        """
+        super().__init__()
+        if edge_dim < 0:
+            raise ValueError("`edge_dim` must be >= 0")
+        if heads < 1:
+            raise ValueError("`heads` must be >= 1")
+        if state_dim % heads != 0:
+            raise ValueError("`state_dim` must be divisible by `heads`")
+        if not (0.0 <= attention_dropout_p <= 1.0):
+            raise ValueError("`attention_dropout_p` must be in [0, 1]")
+
+        gat_out_dim = state_dim // heads
+        gat_edge_dim = edge_dim if edge_dim > 0 else None
+        self.edge_dim = edge_dim
+        self.msg_dim = msg_dim
+        self.conv1 = GATConv(
+            in_channels=in_dim,
+            out_channels=gat_out_dim,
+            heads=heads,
+            concat=True,
+            edge_dim=gat_edge_dim,
+            dropout=attention_dropout_p,
+        )
+        self.conv2 = GATConv(
+            in_channels=state_dim,
+            out_channels=gat_out_dim,
+            heads=heads,
+            concat=True,
+            edge_dim=gat_edge_dim,
+            dropout=attention_dropout_p,
+        )
+        self.lin = Linear(state_dim, out_dim)
+        self.dropout = Dropout(p=dropout_p)
+
+    def _forward_logits(self, x, edge_index, edge_attr):
+        """
+        Execute `forward logits`.
+
+        Args:
+            x: Input value for `x`.
+            edge_index: Input value for `edge_index`.
+            edge_attr: Input value for `edge_attr`.
+        """
+        gat_edge_attr = edge_attr if self.edge_dim > 0 else None
+        h = self.conv1(x, edge_index, edge_attr=gat_edge_attr)
+        h = relu(h)
+        h = self.dropout(h)
+        h = self.conv2(h, edge_index, edge_attr=gat_edge_attr)
+        return self.lin(h)
+
+    def forward(self, x, edge_index, edge_attr):
+        """
+        Run forward propagation for `GATNodeClassifier`.
+
+        Args:
+            x: Input value for `x`.
+            edge_index: Input value for `edge_index`.
+            edge_attr: Input value for `edge_attr`.
+        """
+        out = self._forward_logits(x, edge_index, edge_attr)
+        if self.training:
+            return out
+        return sigmoid(out)
+
+    def fit(self,
+            train: NeighborLoader,
+            val: NeighborLoader,
+            epochs: int,
+            early_stopping: bool = True,
+            save_model_to: Path | str | None = None,
+            *,
+            tolerance: int = 5,
+            optimizer=None,
+            optimizer_kwargs: dict = None,
+            lr_sched=None,
+            lr_sched_kwargs: dict = None,
+            report_performance_every_kth_epoch: int = 10):
+        """
+        Fit the current object.
+
+        Args:
+            train: Input value for `train`.
+            val: Input value for `val`.
+            epochs: Input value for `epochs`.
+            early_stopping: Input value for `early_stopping`.
+            save_model_to: Input value for `save_model_to`.
+            tolerance: Input value for `tolerance`.
+            optimizer: Input value for `optimizer`.
+            optimizer_kwargs: Input value for `optimizer_kwargs`.
+            lr_sched: Input value for `lr_sched`.
+            lr_sched_kwargs: Input value for `lr_sched_kwargs`.
+            report_performance_every_kth_epoch: Input value for `report_performance_every_kth_epoch`.
+        """
+        if epochs < 1:
+            raise ValueError("`epochs` must be >= 1")
+        if report_performance_every_kth_epoch < 1:
+            raise ValueError("`report_performance_every_kth_epoch` must be >= 1")
+        if tolerance < 0:
+            raise ValueError("`tolerance` must be >= 0")
+
+        from . import wb
+
+        k = report_performance_every_kth_epoch
+        save_model_to = Path(save_model_to if save_model_to is not None else os.getcwd())
+        save_model_to.mkdir(parents=True, exist_ok=True)
+
+        device = next(self.parameters()).device # note, need to take `next` of `self.parameters()` because it is an iterator
+        criterion = torch.nn.BCEWithLogitsLoss()
+        _logger.info(
+            "Starting GAT fit (epochs=%d, early_stopping=%s, tolerance=%d, device=%s, save_dir=%s)",
+            epochs,
+            early_stopping,
+            tolerance,
+            device,
+            save_model_to,
+        )
+
+        # ------------------------------- optimizer -------------------------------
+        if optimizer is None:
+            optimizer = torch.optim.Adam(params=self.parameters(), lr=1e-3, weight_decay=1e-4)
+        elif not isinstance(optimizer, torch.optim.Optimizer):
+            kwargs = dict(optimizer_kwargs or {})
+            optimizer = optimizer(params=self.parameters(), **kwargs)
+        # -------------------------------------------------------------------------
+
+        # ------------------------------- scheduler -------------------------------
+        if lr_sched is None:
+            lr_sched = ExponentialLR(optimizer=optimizer, gamma=0.99)
+        elif isinstance(lr_sched, type):
+            kwargs = dict(lr_sched_kwargs or {})
+            kwargs.setdefault("optimizer", optimizer)
+            lr_sched = lr_sched(**kwargs)
+        elif not hasattr(lr_sched, "step"):
+            raise TypeError("`lr_sched` must be a scheduler instance or scheduler class.")
+        # -------------------------------------------------------------------------
+
+        no_generalization_after = 0
+        best_val_loss = float("inf")
+        best_model_path: Path | None = None
+        history: list[dict[str, float | int]] = []
+
+        for epoch in range(1, epochs + 1):
+            # ------------------------------- train -------------------------------
+            self.train()
+            train_loss_sum = 0.0
+            train_accuracy_sum = 0.0
+            train_precision_sum = 0.0
+            train_recall_sum = 0.0
+            train_f1_sum = 0.0
+            train_examples = 0
+
+            for batch in train:
+                batch = batch.to(device)
+                batch_size = int(getattr(batch, "batch_size", batch.y.size(0)))
+                if batch_size == 0:
+                    continue
+
+                mask = torch.zeros(batch.y.size(0), dtype=torch.bool, device=device)
+                mask[:batch_size] = True
+
+                optimizer.zero_grad()
+                logits = self._forward_logits(batch.x, batch.edge_index, batch.edge_attr)
+                y = batch.y.float()
+                loss = criterion(logits[mask], y[mask])
+                loss.backward()
+                optimizer.step()
+
+                with torch.no_grad():
+                    train_loss_sum += float(loss.item()) * batch_size
+                    train_accuracy_sum += accuracy(logits, y, mask) * batch_size
+                    train_precision_sum += precision(logits, y, mask) * batch_size
+                    train_recall_sum += recall(logits, y, mask) * batch_size
+                    train_f1_sum += f1(logits, y, mask) * batch_size
+                    train_examples += batch_size
+
+            if train_examples == 0:
+                raise RuntimeError("Train loader produced no batches with seed nodes.")
+
+            train_loss = train_loss_sum / train_examples
+            train_accuracy = train_accuracy_sum / train_examples
+            train_precision = train_precision_sum / train_examples
+            train_recall = train_recall_sum / train_examples
+            train_f1 = train_f1_sum / train_examples
+            # -------------------------------------------------------------------
+
+            # -------------------------------- val ------------------------------
+            self.eval()
+            val_loss_sum = 0.0
+            val_accuracy_sum = 0.0
+            val_precision_sum = 0.0
+            val_recall_sum = 0.0
+            val_f1_sum = 0.0
+            val_examples = 0
+            with torch.no_grad():
+                for batch in val:
+                    batch = batch.to(device)
+                    batch_size = int(getattr(batch, "batch_size", batch.y.size(0)))
+                    if batch_size == 0:
+                        continue
+
+                    mask = torch.zeros(batch.y.size(0), dtype=torch.bool, device=device)
+                    mask[:batch_size] = True
+
+                    logits = self._forward_logits(batch.x, batch.edge_index, batch.edge_attr)
+                    y = batch.y.float()
+                    loss = criterion(logits[mask], y[mask])
+
+                    val_loss_sum += float(loss.item()) * batch_size
+                    val_accuracy_sum += accuracy(logits, y, mask) * batch_size
+                    val_precision_sum += precision(logits, y, mask) * batch_size
+                    val_recall_sum += recall(logits, y, mask) * batch_size
+                    val_f1_sum += f1(logits, y, mask) * batch_size
+                    val_examples += batch_size
+
+            if val_examples == 0:
+                raise RuntimeError("Validation loader produced no batches with seed nodes.")
+
+            current_val_loss = val_loss_sum / val_examples
+            val_accuracy = val_accuracy_sum / val_examples
+            val_precision = val_precision_sum / val_examples
+            val_recall = val_recall_sum / val_examples
+            val_f1 = val_f1_sum / val_examples
+            # -------------------------------------------------------------------
+
+            # -------------------------- scheduler + early stop ------------------
+            try:
+                lr_sched.step(current_val_loss)
+            except TypeError:
+                lr_sched.step()
+
+            improved = current_val_loss < best_val_loss
+            if improved:
+                best_val_loss = current_val_loss
+                no_generalization_after = 0
+                best_model_path = save_model_to / f"m2f_gat_{current_time()}.pt"
+                wb.save_best_model(self, "m2f-gat-best", best_model_path)
+                _logger.debug(
+                    "New best validation loss %.6f at epoch %d; saved checkpoint to %s",
+                    best_val_loss,
+                    epoch,
+                    best_model_path,
+                )
+            else:
+                no_generalization_after += 1
+
+            history.append({
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "train_acc": train_accuracy,
+                "train_accuracy": train_accuracy,
+                "train_precision": train_precision,
+                "train_recall": train_recall,
+                "train_f1": train_f1,
+                "val_loss": current_val_loss,
+                "val_acc": val_accuracy,
+                "val_accuracy": val_accuracy,
+                "val_precision": val_precision,
+                "val_recall": val_recall,
+                "val_f1": val_f1,
+            })
+            wb.log_epoch(
+                epoch,
+                train_loss,
+                train_accuracy,
+                train_precision,
+                train_recall,
+                train_f1,
+                current_val_loss,
+                val_accuracy,
+                val_precision,
+                val_recall,
+                val_f1,
+                optimizer,
+            )
+
+            if epoch == 1 or epoch % k == 0:
+                _logger.info(
+                    "Epoch %d | train_loss=%.6f train_accuracy=%.4f train_precision=%.4f "
+                    "train_recall=%.4f train_f1=%.4f | val_loss=%.6f val_accuracy=%.4f "
+                    "val_precision=%.4f val_recall=%.4f val_f1=%.4f",
+                    epoch,
+                    train_loss,
+                    train_accuracy,
+                    train_precision,
+                    train_recall,
+                    train_f1,
+                    current_val_loss,
+                    val_accuracy,
+                    val_precision,
+                    val_recall,
+                    val_f1,
+                )
+
+            if early_stopping and no_generalization_after > tolerance:
+                _logger.info(
+                    "No validation improvement for %d epoch(s). Stopping early.",
+                    no_generalization_after
+                )
+                break
+            # -------------------------------------------------------------------
+
+        out = {
+            "best_val_loss": best_val_loss,
+            "best_model_path": str(best_model_path) if best_model_path is not None else None,
+            "history": history,
+        }
+        _logger.info(
+            "Finished GAT fit (epochs_ran=%d, best_val_loss=%.6f, best_model_path=%s)",
+            len(history),
+            best_val_loss,
+            out["best_model_path"],
+        )
+        return out
+
+    def test(self, test: NeighborLoader, *, threshold: float = 0.5) -> dict[str, float]:
+        """
+        Test the current object.
+
+        Args:
+            test: Input value for `test`.
+            threshold: Input value for `threshold`.
+        """
+        device = next(self.parameters()).device
+        criterion = torch.nn.BCEWithLogitsLoss()
+        _logger.info("Starting GAT test (threshold=%.3f, device=%s)", threshold, device)
+
+        self.eval()
+        test_loss_sum = 0.0
+        test_acc_sum = 0.0
+        test_recall_sum = 0.0
+        test_examples = 0
+
+        with torch.no_grad():
+            for batch in test:
+                batch = batch.to(device)
+                batch_size = int(getattr(batch, "batch_size", batch.y.size(0)))
+                if batch_size == 0:
+                    continue
+
+                mask = torch.zeros(batch.y.size(0), dtype=torch.bool, device=device)
+                mask[:batch_size] = True
+
+                logits = self._forward_logits(batch.x, batch.edge_index, batch.edge_attr)
+                y = batch.y.float()
+                loss = criterion(logits[mask], y[mask])
+
+                test_loss_sum += float(loss.item()) * batch_size
+                test_acc_sum += accuracy(logits, y, mask, threshold=threshold) * batch_size
+                test_recall_sum += recall(logits, y, mask, threshold=threshold) * batch_size
+                test_examples += batch_size
+
+        if test_examples == 0:
+            raise RuntimeError("Test loader produced no batches with seed nodes.")
+
+        metrics = {
+            "test_loss": test_loss_sum / test_examples,
+            "test_acc": test_acc_sum / test_examples,
+            "test_recall": test_recall_sum / test_examples,
+        }
+        _logger.info(
+            "Test metrics | loss=%.6f acc=%.4f recall=%.4f",
+            metrics["test_loss"], metrics["test_acc"], metrics["test_recall"]
+        )
+        return metrics
+
+
 __all__ = [
     "GraphConv",
     "GraphConvNodeClassifier",
+    "GATNodeClassifier",
 ]
 
 

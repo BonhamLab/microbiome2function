@@ -1,8 +1,9 @@
 ![LOGO](https://raw.githubusercontent.com/Yehor-Mishchyriak/microbiome2function/main/assets/M2F_banner.png)
+[![Test](https://github.com/Yehor-Mishchyriak/microbiome2function/actions/workflows/test.yml/badge.svg)](https://github.com/Yehor-Mishchyriak/microbiome2function/actions/workflows/test.yml)
 
 # microbiome2function (M2F)
 
-A toolkit for turning UniProt-linked protein annotations into machine-learning datasets.
+A toolkit for mining UniProt-linked protein annotations, engineering protein features, building graph/non-graph datasets, and training neural models for function prediction.
 
 M2F supports:
 - UniProt mining from UniRef accessions
@@ -11,6 +12,9 @@ M2F supports:
 - Dataset interfaces for:
   - PyTorch Geometric GNN training (`ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`)
   - Plain PyTorch FFNN training (`ProteinDataset`)
+- Model implementations for:
+  - Graph convolution and graph attention node classifiers (`GraphConvNodeClassifier`, `GATNodeClassifier`)
+  - Feed-forward neural networks (`FFNN`)
 
 ## Package Status
 
@@ -48,9 +52,10 @@ Current top-level exports include:
 - Cleaning: `clean_col`, `clean_cols`
 - Embedding/encoding: `AAChainEmbedder`, `FreeTXTEmbedder`, `MultiHotEncoder`, `GOEncoder`, `ECEncoder`, `encode_multihot`, `get_GODag`
 - Feature engineering/persistence: `embed_ft_domains`, `embed_AAsequences`, `embed_freetxt_cols`, `encode_go`, `encode_ec`, `empty_tuples_to_NaNs`, `save_df`, `load_df`
-- Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`
+- Models: `FFNN`, `GraphConv`, `GraphConvNodeClassifier`, `GATNodeClassifier`
 - Metrics: `accuracy`, `recall`, `precision`, `f1`
 - Dataset interfaces: `DatasetInput`, `build_topology_from_DatasetInput`, `build_features_from_DatasetInput`, `ProteinGraphInMemoryDataset`, `ProteinGraphOnDiskDataset`, `ProteinDataset`
+- W&B helpers: `M2F.wb` for lightweight metric logging and best-model artifacts during `.fit(...)`
 - Utility namespace: `util`
 
 ## Typical Workflow
@@ -137,7 +142,7 @@ For graph mode, edge chunk files must exist and match the expected naming patter
 ```python
 from pathlib import Path
 import torch
-from M2F import ProteinGraphOnDiskDataset, GraphConvNodeClassifier
+from M2F import ProteinGraphOnDiskDataset, GraphConvNodeClassifier, GATNodeClassifier
 
 ds = ProteinGraphOnDiskDataset(
     root=Path("runs/graph_ondisk"),
@@ -158,6 +163,17 @@ model = GraphConvNodeClassifier(
     state_dim=128,
     out_dim=int(ds.meta["y_dim"]),
 )
+
+# Drop-in attention variant for the same graph/loaders:
+# model = GATNodeClassifier(
+#     in_dim=int(ds.meta["x_dim"]),
+#     edge_dim=int(ds.meta["edge_attr_dim"]),
+#     msg_dim=128,  # kept for constructor compatibility
+#     state_dim=128,
+#     out_dim=int(ds.meta["y_dim"]),
+#     heads=4,
+#     attention_dropout_p=0.1,
+# )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
@@ -217,9 +233,11 @@ dset.close()
 ## Important Operational Notes
 
 - `ProteinGraphOnDiskDataset` and `ProteinDataset` process features in batches and build a global node reindex map.
+- `ProteinGraphOnDiskDataset` and `ProteinDataset` support `with ... as ...:` context-manager usage to release zarr handles automatically.
 - Topology for on-disk graph datasets is built after feature processing so filtered-node reindexing is stable.
 - Feature shards with duplicate `Entry` rows are rejected.
 - Inconsistent per-row feature dimensions are rejected.
+- `GATNodeClassifier` uses the same graph datasets/loaders as `GraphConvNodeClassifier`; `state_dim` must be divisible by `heads`.
 - `force_reload=True` rebuilds raw/processed artifacts from scratch.
 
 ## Logging
@@ -235,18 +253,24 @@ configure_logging(
 )
 ```
 
+### Weights & Biases
+
+`FFNN.fit(...)`, `GraphConvNodeClassifier.fit(...)`, and `GATNodeClassifier.fit(...)` log epoch metrics and best-model artifacts through `M2F.wb` when a W&B run is active:
+
+```python
+import wandb
+
+wandb.init(project="m2f", name="example-run", config={"model": "gat"})
+history = model.fit(train_loader, val_loader, epochs=30, save_model_to="runs/checkpoints")
+wandb.finish()
+```
+
+For training scripts, pass `--wandb-project`, `--wandb-name`, and optionally `--wandb-mode online`.
+
 ## CI Workflows
 
 - `/.github/workflows/test.yml`: multi-version test matrix (3.11, 3.12)
 - `/.github/workflows/build.yml`: test + build distribution artifacts (`sdist`, wheel)
-
-## Repository Layout
-
-- `src/M2F`: package code
-- `tests`: unit tests
-- `model_notebooks`: active notebooks
-- `legacy_code_examples`: old examples
-- `docs.md`: detailed technical guide
 
 ## Detailed Documentation
 
